@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_teleoperator_quest"
+version = "0.1.0"
+description = "Quest input extension and explicit SO-101 contracts for official LeRobot"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+lerobot = [
+    "lerobot @ git+https://github.com/huggingface/lerobot.git@6adf51511b7625090eade8d82d9f61a1846ebe56",
+    "websockets>=15,<16",
+]
+dev = ["pytest>=8,<9", "ruff>=0.14,<0.15", "setuptools>=77", "wheel"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["integration: requires the real LeRobot optional dependencies"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".checks", ".test-tmp", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Optional integration dependencies are imported only after the module-level skip.
+"tests/test_plugin.py" = ["E402"]
