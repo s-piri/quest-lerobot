@@ -27,7 +27,7 @@ INTEGRATION_PROBE = """
 import sys
 from pathlib import Path
 from importlib.metadata import distribution, version
-assert version('lerobot') == '0.6.2'
+assert version('lerobot') == '0.7.1'
 assert 'lerobot_teleoperator_quest' not in sys.modules
 from lerobot.utils.import_utils import register_third_party_plugins
 register_third_party_plugins()

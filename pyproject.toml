@@ -12,7 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 lerobot = [
-    "lerobot @ git+https://github.com/huggingface/lerobot.git@6adf51511b7625090eade8d82d9f61a1846ebe56",
+    "lerobot @ git+https://github.com/huggingface/lerobot.git@b07adcc5e3ce42c26a248236dbb3571f84c28c43",
     "websockets>=15,<16",
 ]
 dev = ["pytest>=8,<9", "ruff>=0.14,<0.15", "setuptools>=77", "wheel"]

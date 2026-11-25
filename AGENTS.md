@@ -30,7 +30,7 @@ name makes an installed plugin invisible to that implementation. The installed
 wheel check calls the real discovery function in a fresh process to guard it.
 
 **LeRobot is pinned to an official Git commit — do not replace it with `>=0.4`.**
-The tested upstream commit reports version 0.6.2, but that version label is not
+The tested upstream commit reports version 0.7.1, but that version label is not
 a published PyPI release. A loose version can select different APIs and Python
 requirements. Update the immutable pin only with real integration verification.
 

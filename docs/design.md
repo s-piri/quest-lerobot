@@ -152,7 +152,7 @@ and processor composition pass real integration tests. Add those components
 as a subsequent runnable milestone.
 
 Use Python 3.12 for the baseline. Official LeRobot commit
-`6adf51511b7625090eade8d82d9f61a1846ebe56` reports version 0.6.2 and is the
+`b07adcc5e3ce42c26a248236dbb3571f84c28c43` reports version 0.7.1 and is the
 input-plugin integration baseline. The runtime extra pins that immutable Git
 commit; the metadata version label is not a published PyPI release. The real
 factory and input contracts are tested; the IK processor and physical mapping

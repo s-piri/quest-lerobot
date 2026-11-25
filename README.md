@@ -33,7 +33,7 @@ python -m pip install ".[dev,lerobot]"
 ```
 
 The extra pins official LeRobot to commit
-`6adf51511b7625090eade8d82d9f61a1846ebe56` (its version metadata says 0.6.2).
+`b07adcc5e3ce42c26a248236dbb3571f84c28c43` (its version metadata says 0.7.1).
 It uses an immutable Git URL because that version label is not a PyPI release.
 This requires Git and can install Torch through LeRobot. It neither forks nor
 patches the official repository. Core imports do not need Torch or LeRobot.
