@@ -28,6 +28,14 @@ starting with explicit SO-101 contracts. Python 3.12 or newer.
   forward and inverse kinematics for it in the standard library
   (`kinematics.py`). Forward kinematics is checked against an independent
   URDF library.
+- A per-arm setup file (`bench.py`) holding the joint mapping and, optionally,
+  limits, the headset-to-base rotation and a wrist camera, bound to the arm's
+  calibration file, with a tool that fits the mapping from poses copied onto
+  the limp arm. The procedure is in [docs/bench.md](docs/bench.md).
+- The first steps toward a scene splat (`splat/`, an optional install):
+  taking a recording, calibrating the wrist camera's lens and mount, and
+  exporting images with camera poses for reconstruction. See
+  [docs/splat.md](docs/splat.md). Tested on synthetic data only.
 - Wheel installation and actual upstream plugin discovery checks.
 
 **It still does not drive an arm.** The gate and the processor step have only

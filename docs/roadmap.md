@@ -20,6 +20,13 @@
   and a preview mode in which the real arm waits. The page explains every
   state in plain words on the page and on a panel in the headset view.
   Checked in a desktop browser only.
+- A per-arm setup file and a tool that fits the joint mapping from poses
+  copied onto the limp arm; the procedure is in `bench.md`. A fit is not a
+  verification.
+- Splat steps 1 and 2 as code, tested on synthetic data only: taking a
+  recording, calibrating the wrist camera's lens and mount from board shots,
+  and exporting images with camera poses for nerfstudio-style trainers and
+  COLMAP. See `splat.md`.
 - The upstream SO-101 URDF packaged with provenance, with standard-library
   forward and inverse kinematics. Forward kinematics matches an independent
   URDF library; the gate has driven the model to Cartesian targets in tests.
@@ -33,7 +40,8 @@ Before enabling physical movement:
 1. Done: the kinematic model and FK/IK are packaged (see above).
 2. Verify each calibrated follower joint's zero/direction against that model.
    Bind the mapping to the existing official robot ID/calibration; never
-   recalibrate or rewrite EEPROM silently.
+   recalibrate or rewrite EEPROM silently. The fitting tool and procedure
+   exist (`bench.md`); the measuring and the supervised check are bench work.
 3. Give the motion gate bench-measured limit values and the verified mapping.
    It has run against the real model only with a stand-in mapping.
 4. Capture the action the follower actually applied beside the requested
@@ -54,6 +62,9 @@ Before enabling physical movement:
 - Official LeRobot dataset record/reload smoke test, retaining measured state
   and the action actually applied after all processing/clipping.
 - Camera names, frame timing and task metadata tested through the real library.
+  LeRobot's dataset module does not import in the global Python on the
+  development machine (it has `av` 18 where LeRobot needs 15), so dataset work
+  needs a clean environment first.
 
 ## Then: a splat of the scene for teleoperation from another room
 
@@ -81,15 +92,16 @@ Viewing is part of the client page, because the splat shares a scene with the
 virtual arm. If building grows into something larger, the subpackage can move
 out then.
 
-Steps, the first two needing neither the arms nor a GPU:
+Steps. The first two exist as code and are documented in `splat.md`, but
+have only run on synthetic data:
 
 1. Export a recording to frames and camera poses: joint angles through the
    verified mapping and this package's kinematics, then a fixed camera-to-wrist
    transform. Poses from joints are the starting guess that reconstruction
    refines; they supply metric scale and the arm's base frame.
-2. A calibration procedure for the camera's lens and its camera-to-wrist
-   transform, with a printed board. The upstream model with the wrist-camera
-   mount gives the starting value.
+2. Calibrate the camera's lens and its camera-to-wrist transform from still
+   shots of a printed board. How closely the views agree on where the board is
+   also checks the joint mapping.
 3. Record a dedicated slow scan of a static scene with exposure locked, and
    mask the gripper. Ordinary teleoperation recordings will not do: things move.
 4. Reconstruct and train on the GPU, then check the result against the arm.

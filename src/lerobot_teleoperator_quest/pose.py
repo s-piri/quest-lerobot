@@ -55,3 +55,24 @@ class Pose:
     def __post_init__(self):
         object.__setattr__(self, "position", vector(self.position, 3, "position"))
         object.__setattr__(self, "orientation", unit_quaternion(self.orientation, "orientation"))
+
+
+def compose(outer: Pose, inner: Pose) -> Pose:
+    """The pose `inner`, given in the frame of `outer`, in the frame `outer` is given in."""
+    moved = rotate(outer.orientation, inner.position)
+    return Pose(
+        tuple(p + m for p, m in zip(outer.position, moved, strict=True)),
+        multiply(outer.orientation, inner.orientation),
+    )
+
+
+def inverse(pose: Pose) -> Pose:
+    """The frame `pose` is given in, as seen from `pose`."""
+    back = conjugate(pose.orientation)
+    return Pose(tuple(-c for c in rotate(back, pose.position)), back)
+
+
+def rotation_matrix(q) -> tuple[tuple[float, ...], ...]:
+    """Rows of the 3x3 matrix that rotates a vector as `rotate(q, v)` does."""
+    columns = [rotate(q, axis) for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    return tuple(tuple(column[row] for column in columns) for row in range(3))

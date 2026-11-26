@@ -15,6 +15,9 @@ lerobot = [
     "lerobot @ git+https://github.com/huggingface/lerobot.git@b07adcc5e3ce42c26a248236dbb3571f84c28c43",
     "websockets>=15,<16",
 ]
+# Camera calibration and capture for the scene splat. Reconstruction and training
+# are external programs, never dependencies.
+splat = ["numpy>=1.26", "opencv-python-headless>=4.9"]
 dev = ["pytest>=8,<9", "ruff>=0.14,<0.15", "setuptools>=77", "wheel"]
 
 [tool.setuptools.packages.find]
@@ -41,3 +44,6 @@ select = ["E", "F", "I", "B", "UP"]
 "tests/test_plugin.py" = ["E402"]
 "tests/test_processor.py" = ["E402"]
 "tests/test_client.py" = ["E402"]
+# The same for the optional numpy and OpenCV.
+"tests/test_splat_calibrate.py" = ["E402"]
+"tests/test_splat_capture.py" = ["E402"]
