@@ -55,8 +55,8 @@ def controller(kinematics=None, **changes):
     return Controller(**{**values, **changes})
 
 
-def sample(seq, at, *, position=(0, 0, 0), grip=True, gripper=0.5, scale=1.0):
-    return ControllerSample(seq, position, IDENTITY, grip, gripper, scale, at)
+def sample(seq, at, *, position=(0, 0, 0), grip=True, gripper=0.5, scale=1.0, follow=True):
+    return ControllerSample(seq, position, IDENTITY, grip, gripper, scale, at, follow)
 
 
 def feedback(at, state=REST):
@@ -219,20 +219,81 @@ def test_gripper_follows_only_while_engaged_within_its_limits_and_speed():
     "reply",
     [(0.0, 0.0), (float("nan"), 0, 0, 0, 0), (float("inf"), 0, 0, 0, 0), "wrong", (1e400,) * 5],
 )
-def test_failed_or_malformed_inverse_kinematics_stops_progress(reply):
+def test_failed_or_malformed_inverse_kinematics_stops_the_goal_not_the_catch_up(reply):
     toy = ToyKinematics(reach=0.5)
     gate = controller(toy)
     engaged(gate)
-    before = gate.tick(sample(2, 1.02, position=(0.05, 0, 0)), 1, feedback(1.02), 1.02).command
+    accepted = gate.tick(sample(2, 1.02, position=(0.05, 0, 0)), 1, feedback(1.02), 1.02)
+    assert accepted.goal.joints_rad[0] == pytest.approx(0.15)
+    assert accepted.command.joints_rad[0] == pytest.approx(0.11)  # still catching up
+
+    # Out of reach, then a malformed answer: the goal stays at the last accepted one.
     step = gate.tick(sample(3, 1.03, position=(0.9, 0, 0)), 1, feedback(1.03), 1.03)
-    assert (step.state, step.command) == (ENGAGED, before)
+    assert (step.state, step.goal) == (ENGAGED, accepted.goal)
     assert step.reason == "inverse kinematics rejected the target"
     toy.reply = reply
-    step = gate.tick(sample(4, 1.04, position=(0.05, 0, 0)), 1, feedback(1.04), 1.04)
-    assert (step.state, step.command) == (ENGAGED, before)
+    for i in range(4, 12):
+        at = 1.0 + i * TICK
+        step = gate.tick(sample(i, at, position=(0.3, 0, 0)), 1, feedback(at), at)
+        assert step.goal == accepted.goal
+        assert step.reason == "inverse kinematics rejected the target"
+    # The arm finished the accepted move and went no further.
+    assert step.command == accepted.goal
     toy.reply = None
-    step = gate.tick(sample(5, 1.05, position=(0.05, 0, 0)), 1, feedback(1.05), 1.05)
+    step = gate.tick(sample(12, 1.12, position=(0.05, 0, 0)), 1, feedback(1.12), 1.12)
     assert step.reason == "tracking"
+
+
+def test_preview_moves_the_goal_while_the_arm_stands_still():
+    gate = controller()
+    assert engaged(gate).goal == REST
+    step = None
+    for i in range(2, 30):
+        at = 1.0 + i * TICK
+        previewing = sample(i, at, position=(0.2, 0, 0), gripper=0.9, follow=False)
+        step = gate.tick(previewing, 1, feedback(at), at)
+    assert step.reason == "previewing"
+    assert step.command == REST  # nothing new for the follower in 28 ticks
+    assert step.goal.joints_rad[0] == pytest.approx(0.3)
+    assert step.goal.gripper == pytest.approx(0.9)
+
+    # Following starts from the arm, at the speed limits, toward the previewed goal.
+    step = gate.tick(sample(30, 1.30, position=(0.2, 0, 0), gripper=0.9), 1, feedback(1.30), 1.30)
+    assert step.reason == "tracking"
+    assert step.command.joints_rad[0] == pytest.approx(0.11)
+    assert step.command.gripper == pytest.approx(0.52)
+    # Letting go of follow freezes the arm where it was sent, wherever the goal goes.
+    frozen = step.command
+    for i in range(31, 40):
+        at = 1.0 + i * TICK
+        step = gate.tick(sample(i, at, position=(-0.2, 0, 0), follow=False), 1, feedback(at), at)
+    assert step.command == frozen
+    assert step.goal.joints_rad[0] == pytest.approx(-0.1)
+
+
+def test_releasing_the_grip_discards_a_previewed_goal():
+    gate = controller()
+    engaged(gate)
+    for i in range(2, 10):
+        at = 1.0 + i * TICK
+        gate.tick(sample(i, at, position=(0.3, 0, 0), follow=False), 1, feedback(at), at)
+    step = gate.tick(sample(10, 1.10, grip=False), 1, feedback(1.10), 1.10)
+    assert (step.state, step.command, step.goal) == (ARMED, REST, None)
+    # The next grip starts again from the measured arm, not from the old preview.
+    step = gate.tick(sample(11, 1.11, position=(0.3, 0, 0)), 1, feedback(1.11), 1.11)
+    assert (step.command, step.goal) == (REST, REST)
+
+
+def test_a_goal_is_shown_only_while_engaged():
+    gate = controller()
+    gate.arm(feedback(1.0), CAL, 1.0)
+    assert gate.tick(sample(0, 1.0, grip=False), 1, feedback(1.0), 1.0).goal is None
+    assert gate.urdf_joints(REST) == pytest.approx(MAPPING.to_urdf(REST, CAL))
+    assert gate.urdf_joints(None) is None
+    assert controller().urdf_joints(REST) is None  # no calibration is known before arming
+    gate.tick(sample(1, 1.01), 1, feedback(1.01), 1.01)
+    gate.stop()
+    assert gate.tick(sample(2, 1.02), 1, feedback(1.02), 1.02).goal is None
 
 
 def test_release_holds_at_the_measured_state_not_the_last_request():
@@ -364,7 +425,7 @@ def test_stop_latches_and_holds_from_fresh_measurement():
     step = gate.tick(sample(11, 1.11, grip=False), 1, feedback(1.11), 1.11)
     assert (step.state, step.command) == (STOPPED, lagging)
 
-    with pytest.raises(RuntimeError, match="cannot arm while stopped"):
+    with pytest.raises(RuntimeError, match="cannot arm while stopped: clear it first"):
         gate.arm(feedback(1.11), CAL, 1.11)
     gate.stop("a second cause")
     assert gate.tick(None, 0, feedback(1.12), 1.12).reason == "operator pressed stop"

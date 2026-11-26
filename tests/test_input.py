@@ -255,6 +255,30 @@ def test_exported_features_rebuild_the_same_sample_for_one_hand():
     assert action_sample(frame_action(*buf.frame())) == (None, 0)
 
 
+def test_follow_is_optional_true_by_default_and_strictly_boolean():
+    buf, _ = buffer()
+    session = buf.open_session()
+    buf.submit(session, pose())
+    assert buf.latest().follow is True
+    buf.submit(session, pose(1, follow=False))
+    assert buf.latest().follow is False
+    action = frame_action(*buf.frame())
+    assert action["quest.follow"] is False
+    assert action_sample(action) == (buf.latest(), session)
+    for bad in (1, "no", None):
+        with pytest.raises(ValueError, match="follow"):
+            buf.submit(session, pose(2, follow=bad))
+
+    two, _ = bimanual()
+    session = two.open_session()
+    two.submit(session, frame(0, hand(follow=False), hand()))
+    hands = two.frame()[0]
+    assert (hands["left"].follow, hands["right"].follow) == (False, True)
+    with pytest.raises(ValueError):
+        two.submit(session, frame(1, hand(), hand()) | {"follow": True})  # it belongs to a hand
+    assert frame_action({"left": None, "right": None}, 0)["quest.left.follow"] is False
+
+
 def test_exported_features_rebuild_each_hand_separately():
     buf, _ = bimanual()
     session = buf.open_session()

@@ -1,7 +1,7 @@
 import importlib.util
 import json
 import time
-from math import degrees
+from math import degrees, radians
 
 import pytest
 
@@ -267,6 +267,93 @@ def test_two_arms_each_follow_their_own_hand_through_one_pipeline():
         held["left_shoulder_pan.pos"]
     )
     assert rig.followers["left"].measured.joints_rad[0] < 0.35  # it never reached +0.4
+
+
+def test_headset_state_shows_measured_and_goal_in_model_joints():
+    rig = Rig()
+    assert rig.step.headset_state() == {
+        "type": "state",
+        "arms": {
+            "": {
+                "state": DISARMED,
+                "reason": DISARMED,
+                "base": [0.0, 0.0, 0.0, 1.0],
+                "measured": None,
+                "goal": None,
+            }
+        },
+    }
+    rig.tick(pose())
+    assert rig.step.headset_state()["arms"][""]["measured"] is None  # not armed: no calibration
+    rig.step.arm(CAL)
+    rig.tick(pose())
+    arm = rig.step.headset_state()["arms"][""]
+    assert (arm["state"], arm["reason"], arm["goal"]) == (ARMED, "ready", None)
+    # The mapping in these tests flips joint 1 about a 10 degree zero.
+    assert arm["measured"] == pytest.approx([0.1, -(0.2 - radians(10)), 0.3, 0.0, 0.0, 0.5])
+
+    rig.tick(press())
+    rig.followers[""].speed = 0.5
+    rig.tick(press(0.2) | {"follow": False}, ticks=10)
+    arm = rig.step.headset_state()["arms"][""]
+    assert (arm["state"], arm["reason"]) == (ENGAGED, "previewing")
+    assert arm["goal"][0] == pytest.approx(0.3)
+    assert arm["measured"][0] == pytest.approx(0.1)  # the preview did not move the arm
+    json.dumps(rig.step.headset_state(), allow_nan=False)
+
+    two = Rig(bimanual=True)
+    two.tick(frame(left=hand(), right=hand()))
+    two.step.arm(CALS)
+    two.tick(frame(left=hand(), right=hand()))
+    arms = two.step.headset_state()["arms"]
+    assert set(arms) == {"left", "right"}
+    assert arms["right"]["measured"][0] == pytest.approx(RIGHT.joints_rad[0])
+
+
+def test_headset_state_travels_from_the_step_through_the_real_listener(tmp_path):
+    quest = make_teleoperator_from_config(QuestConfig(port=0, calibration_dir=tmp_path))
+    quest.connect()
+    try:
+        follower = FakeFollower(REST)
+        step = QuestControlStep(controller())
+        pipeline = quest_processor(step)
+        states = []
+
+        with connect(quest.url) as ws:
+            ws.send(json.dumps({"type": "auth", "token": quest.access_token}))
+            ws.recv(timeout=2)
+
+            def send(seq, **changes):
+                """One sample, then one turn of the host loop, which queues a state."""
+                ws.send(json.dumps(pose(seq, **changes)))
+                while True:
+                    reply = json.loads(ws.recv(timeout=2))
+                    if reply["type"] == "accepted":
+                        break
+                    states.append(reply)
+                action = pipeline((quest.get_action(), follower.get_observation()))
+                follower.send_action(action)
+                follower.advance(0.01)
+                quest.send_state(step.headset_state())
+
+            send(0)
+            step.arm(CAL)
+            send(1)
+            send(2, grip=True, scale=1.0)
+            for seq in range(3, 14):
+                send(seq, grip=True, scale=1.0, position=[1.1, 2, 3], follow=False)
+        # Delivery is newest-only, so which states arrive depends on timing; their
+        # order and the final picture do not.
+        seen = [state["arms"][""] for state in states]
+        order = [DISARMED, ARMED, ENGAGED]
+        ranks = [order.index(arm["state"]) for arm in seen]
+        assert ranks == sorted(ranks)
+        last = seen[-1]
+        assert (last["state"], last["reason"]) == (ENGAGED, "previewing")
+        assert last["goal"][0] == pytest.approx(0.2)
+        assert last["measured"][0] == pytest.approx(0.1)
+    finally:
+        quest.disconnect()
 
 
 def test_arm_names_must_match_the_official_follower_prefixes():

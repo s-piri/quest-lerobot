@@ -9,6 +9,8 @@ from .contracts import finite, timestamp, unit_interval, vector
 
 HANDS = ("left", "right")
 HAND_FIELDS = frozenset({"position", "orientation", "grip", "gripper", "scale"})
+# Optional beside them: "follow". False previews a target without moving the arm.
+OPTIONAL_FIELDS = frozenset({"follow"})
 POSE_FIELDS = frozenset({"type", "version", "seq"}) | HAND_FIELDS
 FRAME_FIELDS = frozenset({"type", "version", "seq", *HANDS})
 
@@ -33,6 +35,7 @@ class ControllerSample:
     gripper: float
     scale: float
     received_at: float
+    follow: bool = True  # False: the target may move, but the follower stays put
 
     @classmethod
     def checked(cls, sequence: int, hand, received_at: float):
@@ -41,6 +44,9 @@ class ControllerSample:
             raise ValueError("sequence must be a non-negative JSON-safe integer")
         if type(hand["grip"]) is not bool:
             raise ValueError("grip must be a boolean")
+        follow = hand.get("follow", True)
+        if type(follow) is not bool:
+            raise ValueError("follow must be a boolean")
         orientation = vector(hand["orientation"], 4, "orientation")
         if abs(sqrt(sum(q * q for q in orientation)) - 1) > 0.001:
             raise ValueError("orientation must be a unit xyzw quaternion")
@@ -52,12 +58,13 @@ class ControllerSample:
             unit_interval(hand["gripper"], "gripper"),
             unit_interval(hand["scale"], "scale"),
             timestamp(received_at),
+            follow,
         )
 
     @classmethod
     def parse(cls, payload, received_at: float):
         """A version-1 message: one unnamed controller."""
-        if not isinstance(payload, dict) or set(payload) != POSE_FIELDS:
+        if not isinstance(payload, dict) or set(payload) - OPTIONAL_FIELDS != POSE_FIELDS:
             raise ValueError("pose message must contain exactly the documented fields")
         return cls.checked(_header(payload, 1), payload, received_at)
 
@@ -74,7 +81,7 @@ def parse_frame(payload, received_at: float, bimanual: bool) -> dict:
         fields = payload[hand]
         if fields is None:
             frame[hand] = None
-        elif not isinstance(fields, dict) or set(fields) != HAND_FIELDS:
+        elif not isinstance(fields, dict) or set(fields) - OPTIONAL_FIELDS != HAND_FIELDS:
             raise ValueError(f"{hand} must be null or contain exactly the documented fields")
         else:
             frame[hand] = ControllerSample.checked(sequence, fields, received_at)
@@ -184,6 +191,7 @@ def input_action(sample: ControllerSample | None, session: int, prefix: str = "q
         "seq": sample.sequence if active else -1,
         "received_at": sample.received_at if active else 0.0,
         "grip": sample.grip if active else False,
+        "follow": sample.follow if active else False,
         "gripper": sample.gripper if active else 0.0,
         "scale": sample.scale if active else 0.0,
         **dict(zip(("x", "y", "z"), sample.position if active else (0.0, 0.0, 0.0), strict=True)),
@@ -223,6 +231,7 @@ def action_sample(action, prefix: str = "quest.") -> tuple[ControllerSample | No
         "position": [values[k] for k in ("x", "y", "z")],
         "orientation": [values[k] for k in ("qx", "qy", "qz", "qw")],
         "grip": values["grip"],
+        "follow": values["follow"],
         "gripper": values["gripper"],
         "scale": values["scale"],
     }

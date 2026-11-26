@@ -127,11 +127,16 @@ class Anchor:
 
 @dataclass(frozen=True)
 class Step:
-    """One tick's decision. `command` is a request; None means send nothing."""
+    """One tick's decision. `command` is a request; None means send nothing.
+
+    `goal` is where the gripped hand asks the arm to be. The command approaches
+    it at the speed limits, and stands still while the sample says not to follow.
+    """
 
     state: str
     command: So101State | None
     reason: str
+    goal: So101State | None = None
 
 
 class Controller:
@@ -172,6 +177,7 @@ class Controller:
         self._released: int | None = None
         self._session = 0
         self._anchor: Anchor | None = None
+        self._goal: So101State | None = None
         self._command: So101State | None = None
         self._hold: So101State | None = None
         self._hold_pending = False
@@ -181,9 +187,18 @@ class Controller:
         with self._lock:
             return self._state
 
+    def urdf_joints(self, state: So101State | None) -> tuple[float, ...] | None:
+        """A state in the model's joint radians, for display. None until armed."""
+        with self._lock:
+            if state is None or not self._calibration:
+                return None
+            return self.mapping.to_urdf(state, self._calibration)
+
     def arm(self, feedback: Telemetry | None, calibration: str, now: float):
         """Permit a later release-then-press to engage. It sends nothing itself."""
         with self._lock:
+            if self._state in (STOPPED, FAULTED):
+                raise RuntimeError(f"cannot arm while {self._state}: clear it first")
             if self._state != DISARMED:
                 raise RuntimeError(f"cannot arm while {self._state}")
             if not self._fresh(feedback, timestamp(now)):
@@ -250,6 +265,7 @@ class Controller:
             if self._state == ENGAGED and not (usable and sample.grip and session == self._session):
                 self._state = ARMED
                 self._anchor = None
+                self._goal = None
                 self._command = None
                 self._released = None
                 self._hold = feedback.measured
@@ -295,6 +311,7 @@ class Controller:
         self._state = state
         self._reason = reason
         self._anchor = None
+        self._goal = None
         self._command = None
         self._released = None
 
@@ -308,6 +325,7 @@ class Controller:
         self._anchor = Anchor(
             Pose(sample.position, sample.orientation), tool, sample.scale, self.rotation_scale
         )
+        self._goal = measured
         self._command = measured
         self._session = session
         self._state = ENGAGED
@@ -329,38 +347,55 @@ class Controller:
             ),
             target.orientation,
         )
-        seed = self.mapping.to_urdf(self._command, self._calibration)
+        # The goal is where the hand asks the arm to be; the command is what is
+        # sent, and it approaches the goal only while the sample says to follow.
+        seed = self.mapping.to_urdf(self._goal, self._calibration)
         try:
             solution = self.kinematics.ik(target, seed)
-            goal = (
+            wanted = (
                 None
                 if solution is None
                 else self.mapping.from_urdf(
-                    solution, self._command.gripper, self._calibration
+                    solution, self._goal.gripper, self._calibration
                 ).joints_rad
             )
         except ValueError:
-            goal = None
-        if goal is None:
-            return Step(ENGAGED, self._command, "inverse kinematics rejected the target")
-        joints = tuple(
-            _approach(current, _bound(wanted, low, high, current), speed * elapsed)
-            for current, wanted, low, high, speed in zip(
-                self._command.joints_rad,
-                goal,
-                limits.joint_min,
-                limits.joint_max,
-                limits.joint_speed,
-                strict=True,
+            wanted = None
+        if wanted is not None:
+            # Bounded against where the arm is being held, not the previous goal.
+            joints = tuple(
+                _bound(value, low, high, current)
+                for current, value, low, high in zip(
+                    self._command.joints_rad,
+                    wanted,
+                    limits.joint_min,
+                    limits.joint_max,
+                    strict=True,
+                )
             )
-        )
-        gripper = _approach(
-            self._command.gripper,
-            _bound(sample.gripper, limits.gripper_min, limits.gripper_max, self._command.gripper),
-            limits.gripper_speed * elapsed,
-        )
-        self._command = So101State(joints, _clamp(gripper, 0.0, 1.0))
-        return Step(ENGAGED, self._command, "tracking")
+            gripper = _bound(
+                sample.gripper, limits.gripper_min, limits.gripper_max, self._command.gripper
+            )
+            self._goal = So101State(joints, _clamp(gripper, 0.0, 1.0))
+        if sample.follow:
+            joints = tuple(
+                _approach(current, goal, speed * elapsed)
+                for current, goal, speed in zip(
+                    self._command.joints_rad,
+                    self._goal.joints_rad,
+                    limits.joint_speed,
+                    strict=True,
+                )
+            )
+            gripper = _approach(
+                self._command.gripper, self._goal.gripper, limits.gripper_speed * elapsed
+            )
+            self._command = So101State(joints, _clamp(gripper, 0.0, 1.0))
+        if wanted is None:
+            reason = "inverse kinematics rejected the target"
+        else:
+            reason = "tracking" if sample.follow else "previewing"
+        return Step(ENGAGED, self._command, reason, self._goal)
 
 
 class Group:

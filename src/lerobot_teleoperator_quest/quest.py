@@ -7,6 +7,7 @@ import socket
 import ssl
 from threading import Lock, Thread, current_thread
 from time import monotonic
+from urllib.parse import urlencode
 
 from lerobot.teleoperators.teleoperator import Teleoperator
 from websockets.exceptions import ConnectionClosed
@@ -34,6 +35,7 @@ class Quest(Teleoperator):
         self._connection_lock = Lock()
         self._feedback_lock = Lock()
         self._feedback: dict[str, Telemetry] | None = None
+        self._state: str | None = None  # the newest undelivered state message
         self._token = secrets.token_urlsafe(32)
 
     @property
@@ -87,6 +89,27 @@ class Quest(Teleoperator):
         scheme = "wss" if self.config.cert else "ws"
         return f"{scheme}://{host}:{port}"
 
+    def pairing_link(self, page: str, host: str | None = None) -> str:
+        """The client page's address with this run's listener and token filled in.
+
+        Open it on the headset instead of typing the token there. Everything
+        after "#" stays in the browser and is never sent to the page's server.
+        `host` replaces a wildcard or loopback bind address with the name the
+        headset should use. Calling this reveals the token: treat the link as one.
+        """
+        if not isinstance(page, str) or not page or "#" in page:
+            raise ValueError("page must be the client page's address, without a fragment")
+        url = self.url
+        if host is not None:
+            if not isinstance(host, str) or not host:
+                raise ValueError("host must be a non-empty name or address")
+            scheme, _, rest = url.partition("://")
+            url = f"{scheme}://{host}:{rest.rsplit(':', 1)[1]}"
+        fields = {"url": url, "token": self._token}
+        if self.config.bimanual:
+            fields["mode"] = "both"
+        return f"{page}#{urlencode(fields)}"
+
     def connect(self, calibrate: bool = True) -> None:
         if self.is_connected:
             raise RuntimeError("Quest input is already connected")
@@ -112,6 +135,7 @@ class Quest(Teleoperator):
         self._server.handler = lambda sock, addr: self._track_transport(handler, sock, addr)
         with self._feedback_lock:
             self._feedback = None
+            self._state = None
         with self._connection_lock:
             self._accepting = True
         self._thread = Thread(target=self._server.serve_forever, name="quest-input", daemon=True)
@@ -160,8 +184,15 @@ class Quest(Teleoperator):
             connection.send(json.dumps({"type": "ready", "version": version, "session": session}))
             for message in connection:
                 payload = json.loads(message)
-                self._buffer.submit(session, payload)
-                connection.send(json.dumps({"type": "accepted", "seq": payload["seq"]}))
+                # A ping is not input and refreshes nothing: it only gives the
+                # listener a moment to deliver state while no sample is flowing.
+                if payload != {"type": "ping"}:
+                    self._buffer.submit(session, payload)
+                    connection.send(json.dumps({"type": "accepted", "seq": payload["seq"]}))
+                with self._feedback_lock:
+                    state, self._state = self._state, None
+                if state is not None:
+                    connection.send(state)
         except (ValueError, TypeError, TimeoutError):
             # Invalidate before the closing handshake: get_action must not
             # expose the last armed sample while a peer delays that handshake.
@@ -195,6 +226,25 @@ class Quest(Teleoperator):
             snapshot[arm] = Telemetry(from_follower_observation(own), None, None, now)
         with self._feedback_lock:
             self._feedback = snapshot
+
+    def send_state(self, state: dict) -> None:
+        """Queue what the headset should draw; see `QuestControlStep.headset_state`.
+
+        It never blocks on the headset: the listener delivers only the newest
+        state, after acknowledging the client's next sample.
+        """
+        if not self.is_connected:
+            raise RuntimeError("Quest input is disconnected")
+        if not isinstance(state, dict) or state.get("type") != "state":
+            raise ValueError('state must be a dictionary with "type": "state"')
+        try:
+            text = json.dumps(state, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("state must be finite JSON") from exc
+        if len(text) > 8192:
+            raise ValueError("state is too large to send every frame")
+        with self._feedback_lock:
+            self._state = text
 
     @property
     def feedback(self) -> dict | None:

@@ -231,3 +231,134 @@ def test_single_plugin_rejects_a_two_hand_message_and_reports_version_one(quest)
 def test_bimanual_must_be_a_boolean():
     with pytest.raises(ValueError, match="bimanual"):
         QuestConfig(bimanual=1)
+
+
+def exchange(ws, payload):
+    """Send one sample; return the state messages that arrived before its acknowledgment."""
+    ws.send(json.dumps(payload))
+    states = []
+    while True:
+        reply = json.loads(ws.recv(timeout=2))
+        if reply["type"] == "accepted":
+            assert reply["seq"] == payload["seq"]
+            return states
+        states.append(reply)
+
+
+def test_state_reaches_the_headset_after_an_acknowledgment_newest_only(quest):
+    with pytest.raises(RuntimeError):
+        quest.send_state({"type": "state", "arms": {}})
+    quest.connect()
+    with connect(quest.url) as ws:
+        auth(ws, quest.access_token)
+        # Queued while the listener waits for a sample: only the newest is kept.
+        quest.send_state({"type": "state", "arms": {"": {"state": "armed"}}})
+        newest = {"type": "state", "arms": {"": {"state": "engaged", "goal": [0.1] * 6}}}
+        quest.send_state(newest)
+        assert exchange(ws, pose()) == []  # it follows an acknowledgment, never precedes one
+        assert exchange(ws, pose(1)) == [newest]
+        assert exchange(ws, pose(2)) == []  # delivered once
+        assert exchange(ws, pose(3)) == []
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        None,
+        [],
+        {"arms": {}},
+        {"type": "pose"},
+        {"type": "state", "value": float("nan")},
+        {"type": "state", "value": float("inf")},
+        {"type": "state", "value": object()},
+        {"type": "state", "value": "x" * 9000},
+    ],
+)
+def test_malformed_state_is_rejected_before_it_is_queued(quest, state):
+    quest.connect()
+    with pytest.raises(ValueError):
+        quest.send_state(state)
+    with connect(quest.url) as ws:
+        auth(ws, quest.access_token)
+        ws.send(json.dumps(pose()))
+        assert json.loads(ws.recv(timeout=2))["type"] == "accepted"
+        ws.send(json.dumps(pose(1)))
+        assert json.loads(ws.recv(timeout=2)) == {"type": "accepted", "seq": 1}
+
+
+def test_a_queued_state_does_not_survive_a_restart(quest):
+    quest.connect()
+    quest.send_state({"type": "state", "arms": {}})
+    quest.disconnect()
+    quest.connect()
+    with connect(quest.url) as ws:
+        auth(ws, quest.access_token)
+        ws.send(json.dumps(pose()))
+        assert json.loads(ws.recv(timeout=2))["type"] == "accepted"
+        ws.send(json.dumps(pose(1)))
+        assert json.loads(ws.recv(timeout=2)) == {"type": "accepted", "seq": 1}
+
+
+def test_a_ping_delivers_state_without_counting_as_input(tmp_path):
+    config = QuestConfig(port=0, calibration_dir=tmp_path, timeout_s=0.3)
+    quest = make_teleoperator_from_config(config)
+    quest.connect()
+    try:
+        with connect(quest.url) as ws:
+            auth(ws, quest.access_token)
+            assert exchange(ws, pose()) == []
+            assert quest.get_action()["quest.active"] is True
+
+            # No sample is flowing, yet the picture still reaches the headset.
+            state = {"type": "state", "arms": {"": {"state": "armed"}}}
+            quest.send_state(state)
+            ws.send(json.dumps({"type": "ping"}))
+            assert json.loads(ws.recv(timeout=2)) == state
+
+            # Pings for longer than the input timeout do not keep the input alive.
+            import time
+
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                ws.send(json.dumps({"type": "ping"}))
+                time.sleep(0.05)
+            assert quest.get_action()["quest.active"] is False
+            assert exchange(ws, pose(1)) == []  # a ping is not acknowledged and uses no sequence
+
+            ws.send(json.dumps({"type": "ping", "seq": 2}))  # not a ping: malformed input
+            with pytest.raises(ConnectionClosed):
+                ws.recv(timeout=2)
+    finally:
+        quest.disconnect()
+
+
+def test_pairing_link_carries_this_runs_listener_and_token(quest, pair):
+    with pytest.raises(RuntimeError):
+        quest.pairing_link("https://robot.local/client/")
+    quest.connect()
+    from urllib.parse import parse_qs, urlsplit
+
+    link = quest.pairing_link("https://robot.local/client/")
+    parts = urlsplit(link)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "robot.local", "/client/")
+    assert parse_qs(parts.fragment) == {"url": [quest.url], "token": [quest.access_token]}
+
+    named = parse_qs(
+        urlsplit(quest.pairing_link("https://robot.local/", host="robot.local")).fragment
+    )
+    port = quest.url.rsplit(":", 1)[1]
+    assert named["url"] == [f"ws://robot.local:{port}"]
+    for page in ("", None, "https://robot.local/#old"):
+        with pytest.raises(ValueError):
+            quest.pairing_link(page)
+    with pytest.raises(ValueError):
+        quest.pairing_link("https://robot.local/", host="")
+
+    pair.connect()
+    assert parse_qs(urlsplit(pair.pairing_link("https://robot.local/")).fragment)["mode"] == [
+        "both"
+    ]
+    # The token is still absent from anything a CLI would log.
+    from dataclasses import asdict
+
+    assert quest.access_token not in repr(asdict(quest.config))

@@ -21,7 +21,7 @@ from lerobot.processor import (
 )
 
 from .contracts import So101State, Telemetry
-from .control import Controller, Group, Step
+from .control import DISARMED, Controller, Group, Step
 from .input import HANDS, action_sample, input_action
 from .so101 import FOLLOWER_KEYS, from_follower_observation, to_follower_action
 
@@ -65,6 +65,28 @@ class QuestControlStep(RobotActionProcessorStep):
 
     def clear(self):
         self.group.clear()
+
+    def headset_state(self) -> dict:
+        """What the headset draws, for `Quest.send_state`: each arm's measured joints and
+        the goal its hand is asking for, in the model's radians with the gripper 0-1.
+
+        Joints are None until the arm has been armed, because only then is the
+        calibration known that turns follower values into model joints.
+        """
+        arms = {}
+        for arm, controller in self.group.controllers.items():
+            step = self.steps.get(arm)
+            record = self._feedback.get(arm)
+            measured = None if record is None else controller.urdf_joints(record.measured)
+            goal = None if step is None else controller.urdf_joints(step.goal)
+            arms[arm] = {
+                "state": DISARMED if step is None else step.state,
+                "reason": DISARMED if step is None else step.reason,
+                "base": list(controller.xr_to_base),
+                "measured": None if measured is None else [*measured, record.measured.gripper],
+                "goal": None if goal is None else [*goal, step.goal.gripper],
+            }
+        return {"type": "state", "arms": arms}
 
     def action(self, action: RobotAction) -> RobotAction:
         now = self._clock()
