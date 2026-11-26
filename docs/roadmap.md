@@ -11,6 +11,11 @@
   scale, joint/speed/gripper/workspace limits, input and feedback watchdogs,
   latched stop, and release/re-press after any gap or reconnection. Tested with
   a fake follower that lags and jams, and a toy stand-in for kinematics.
+- Two-arm mode: version-2 messages with both hands, per-hand grip gates, and a
+  group that stops both arms when either stops or faults.
+- LeRobot processor step composing the gate with Quest input and follower
+  observations for one arm or two, run through the real pipeline class.
+- Draft WebXR page; its messages are tested in Node against the real listener.
 
 ## Next: observation-aware control processor
 
@@ -24,15 +29,17 @@ Before enabling physical movement:
    recalibrate or rewrite EEPROM silently.
 3. Give the motion gate the real FK/IK and bench-measured limit values. Its
    anchoring and limit logic exist but have only run against a toy model.
-4. Compose the gate with Quest input and follower observations through
-   LeRobot's processor API, and capture the action actually applied.
-5. Repeat the fake-follower tests through that composition.
+4. Capture the action the follower actually applied beside the requested
+   one. The processor step records measured and requested state only.
+5. Decide where the operator arms, stops and clears from, and build it.
 6. Bench-verify shutdown, disconnect, hold and low-speed movement with the human
    operator. No automated test may energise the real arm.
 
 ## Then: Quest client and datasets
 
-- Minimal HTTPS WebXR page with deliberate pairing and explicit reference frame.
+- Try the draft WebXR page on the headset over HTTPS and fix what that finds.
+- For two arms: a second official calibration, mapping, limits and base
+  rotation, and a bench check that each hand drives the arm it should.
 - A runner that composes the verified processor and official SO-101 follower.
 - Official LeRobot dataset record/reload smoke test, retaining measured state
   and the action actually applied after all processing/clipping.

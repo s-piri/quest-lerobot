@@ -1,7 +1,7 @@
 # Working in Quest for LeRobot
 
-This is an independent Python 3.12 project. The user has SO-101 hardware;
-there is no B601 requirement. The old teleop checkout is reference material,
+This is an independent Python 3.12 project. The user has two SO-ARM arms, and
+controlling both at once is a goal; there is no B601 requirement. The old teleop checkout is reference material,
 not a runtime or build dependency.
 
 ## Verification
@@ -55,6 +55,17 @@ Re-seeding the hold from each new measurement lets gravity sag walk the goal
 downward. Clamping a state that starts outside a limit moves the arm with no
 movement of the hand, so limits only refuse motion further out. The first
 command of a grip is exactly the measured state, and arming sends nothing.
+
+**The processor step repeats its last goal when the gate sends nothing.**
+LeRobot's loops call `send_action` every tick. Returning the measured state
+each time would re-seed the hold and let sag walk it downward; repeating the
+same goal changes nothing for a position servo. Only the first goal ever
+returned is latched from a measurement.
+
+**Bimanual input is one message with one sequence — do not split it per hand.**
+Two streams would let one hand's samples go stale or reorder against the
+other's. Each hand still has its own release-before-press gate, and a hand
+that loses tracking must release again.
 
 **Invalidate input before closing the socket — do not move it after `close()`.**
 A closing WebSocket handshake can wait on the peer. Keeping the last armed

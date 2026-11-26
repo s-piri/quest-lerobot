@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quest input for LeRobot</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font: 18px/1.5 system-ui, sans-serif;
+      }
+      body {
+        max-width: 34rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+      }
+      input,
+      select,
+      button {
+        font: inherit;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.5rem;
+      }
+      button {
+        margin-top: 1.25rem;
+      }
+      #status {
+        margin-top: 1.25rem;
+        padding: 0.75rem;
+        border: 1px solid;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Quest input for LeRobot</h1>
+    <p>
+      This page only sends controller poses. Squeezing the grip is the deadman: release it and the
+      host stops following. It is not an emergency stop.
+    </p>
+
+    <label>
+      Listener address
+      <input id="url" placeholder="wss://host-name:8765" autocomplete="off" spellcheck="false" />
+    </label>
+    <label>
+      Pairing token (shown by the host for this run only)
+      <input id="token" type="password" autocomplete="off" spellcheck="false" />
+    </label>
+    <label>
+      Controllers
+      <select id="mode">
+        <option value="right">Right hand, one arm</option>
+        <option value="left">Left hand, one arm</option>
+        <option value="both">Both hands, two arms</option>
+      </select>
+    </label>
+    <label>
+      Motion scale: <output id="scaleValue">0.25</output>
+      <input id="scale" type="range" min="0.05" max="1" step="0.05" value="0.25" />
+    </label>
+
+    <button id="connect">Connect</button>
+    <button id="enter" disabled>Enter headset view</button>
+    <div id="status" role="status">Not connected.</div>
+
+    <script type="module">
+      import { auth, expectedVersion, hand, message } from "./protocol.js";
+
+      const $ = (id) => document.getElementById(id);
+      const say = (text) => ($("status").textContent = text);
+
+      let socket = null;
+      let ready = false;
+      let awaitingAck = false;
+      let seq = 0;
+      let mode = "right";
+      let xr = null;
+
+      // A link may carry the address and token after "#", which browsers never send to a server.
+      const given = new URLSearchParams(location.hash.slice(1));
+      $("url").value = given.get("url") ?? "";
+      $("token").value = given.get("token") ?? "";
+      if (given.get("mode")) $("mode").value = given.get("mode");
+      history.replaceState(null, "", location.pathname + location.search);
+
+      $("scale").addEventListener("input", () => ($("scaleValue").value = $("scale").value));
+
+      $("connect").addEventListener("click", () => {
+        socket?.close();
+        mode = $("mode").value;
+        ready = false;
+        awaitingAck = false;
+        seq = 0; // sequences restart with every connection
+        let opened;
+        try {
+          opened = new WebSocket($("url").value.trim());
+        } catch (error) {
+          say(`That address cannot be opened: ${error.message}`);
+          return;
+        }
+        socket = opened;
+        say("Connecting…");
+        opened.addEventListener("open", () => opened.send(JSON.stringify(auth($("token").value))));
+        opened.addEventListener("message", (event) => {
+          const reply = JSON.parse(event.data);
+          if (reply.type === "ready") {
+            if (reply.version !== expectedVersion(mode)) {
+              say(
+                reply.version === 2
+                  ? "The host expects both hands. Choose “Both hands, two arms” and connect again."
+                  : "The host expects one hand. Choose a single hand and connect again.",
+              );
+              opened.close();
+              return;
+            }
+            ready = true;
+            $("enter").disabled = false;
+            say(`Paired (session ${reply.session}). Enter the headset view to start sending.`);
+          } else if (reply.type === "accepted") {
+            awaitingAck = false;
+          }
+        });
+        opened.addEventListener("close", (event) => {
+          if (socket !== opened) return;
+          ready = false;
+          $("enter").disabled = true;
+          const why = event.reason || (event.code === 1006 ? "no connection or untrusted certificate" : "");
+          say(`Disconnected (${event.code}${why ? `: ${why}` : ""}). The host is no longer following.`);
+        });
+      });
+
+      $("enter").addEventListener("click", async () => {
+        if (!navigator.xr) {
+          say("This browser has no WebXR. Open the page in the headset's browser over HTTPS.");
+          return;
+        }
+        // Passthrough keeps the real arm in view; fall back to VR where it is unavailable.
+        const kind = (await navigator.xr.isSessionSupported("immersive-ar")) ? "immersive-ar" : "immersive-vr";
+        try {
+          xr = await navigator.xr.requestSession(kind, { requiredFeatures: ["local-floor"] });
+        } catch (error) {
+          say(`The headset view could not start: ${error.message}`);
+          return;
+        }
+        const gl = document.createElement("canvas").getContext("webgl", { xrCompatible: true });
+        await xr.updateRenderState({ baseLayer: new XRWebGLLayer(xr, gl) });
+        // Positions are metres in "local-floor": y up, origin on the floor where the session began.
+        const space = await xr.requestReferenceSpace("local-floor");
+        xr.addEventListener("end", () => {
+          xr = null;
+          say(ready ? "Headset view closed. Nothing is being sent." : $("status").textContent);
+        });
+
+        const onFrame = (_time, frame) => {
+          if (!xr) return;
+          xr.requestAnimationFrame(onFrame);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, xr.renderState.baseLayer.framebuffer);
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          // Latest-only: skip this frame while the previous sample is unacknowledged.
+          if (!ready || awaitingAck) return;
+
+          const hands = {};
+          for (const source of xr.inputSources) {
+            if (!source.gripSpace || !source.gamepad) continue;
+            if (source.handedness !== "left" && source.handedness !== "right") continue;
+            const pose = frame.getPose(source.gripSpace, space);
+            if (!pose) continue;
+            const [trigger, squeeze] = source.gamepad.buttons; // the xr-standard layout
+            hands[source.handedness] = hand(
+              pose.transform,
+              squeeze?.pressed === true,
+              trigger?.value ?? 0,
+              Number($("scale").value),
+            );
+          }
+          const next = message(mode, seq, hands);
+          if (!next) return; // the chosen hand is not tracked: the host's timeout handles it
+          socket.send(JSON.stringify(next));
+          awaitingAck = true;
+          seq += 1;
+        };
+        xr.requestAnimationFrame(onFrame);
+        say("Sending. Release the grip, then squeeze it to move.");
+      });
+    </script>
+  </body>
+</html>

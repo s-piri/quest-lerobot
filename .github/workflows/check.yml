@@ -26,8 +26,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # The browser client's messages are checked in Node against the real listener.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: python -m pip install ".[dev,lerobot]" wheel
+      # Official follower classes need their motor library to be constructed (never connected).
+      - run: python -m pip install "rustypot>=1.13.1,<2.0.0"
       - run: python -c "import lerobot; from lerobot_teleoperator_quest import Quest"
-      - run: python -m pytest
+      - run: node --test client/protocol.test.mjs
+      # -rs lists skips: none are expected in this job.
+      - run: python -m pytest -rs
       - run: python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist
       - run: python scripts/check_installation.py --integration --wheel dist/lerobot_teleoperator_quest-0.1.0-py3-none-any.whl

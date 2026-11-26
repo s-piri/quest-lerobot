@@ -8,8 +8,9 @@ Python import package: `lerobot_teleoperator_quest`.
 ## Purpose and scope
 
 Build an independently installable Quest/WebXR teleoperation integration for
-official Hugging Face LeRobot. The user's available hardware is one SO-101;
-its bench bring-up is complete. B601 hardware support is outside this project.
+official Hugging Face LeRobot. The user has two SO-ARM arms (this document
+originally assumed one SO-101, whose bench bring-up is complete); controlling
+both at once was added as a goal on 2026-11-26. B601 hardware support is outside this project.
 The existing `roboarms-ar-teleop` checkout remains unchanged and available for
 current hardware testing.
 
