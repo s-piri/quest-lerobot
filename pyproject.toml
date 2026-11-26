@@ -20,6 +20,9 @@ dev = ["pytest>=8,<9", "ruff>=0.14,<0.15", "setuptools>=77", "wheel"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+lerobot_teleoperator_quest = ["models/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

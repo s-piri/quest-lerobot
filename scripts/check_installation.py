@@ -20,7 +20,9 @@ assert 'torch' not in sys.modules
 sample = Telemetry(So101State((0,)*5, 0), So101State((1,)*5, 1), None, 1)
 data = json.loads(json.dumps(sample.to_dict()))
 assert data['measured'] != data['requested']
-print('PASS: installed core wheel, no LeRobot/Torch, distinct measurements')
+from lerobot_teleoperator_quest.kinematics import so101
+assert len(so101().fk((0,) * 5).position) == 3, 'the packaged SO-101 model did not load'
+print('PASS: installed core wheel, no LeRobot/Torch, packaged model, distinct measurements')
 """
 
 INTEGRATION_PROBE = """

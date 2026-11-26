@@ -1,0 +1,2 @@
+# Byte-exact upstream files: their checksum is verified at load.
+src/lerobot_teleoperator_quest/models/* -text
