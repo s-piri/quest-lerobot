@@ -44,8 +44,9 @@ Before enabling physical movement:
    exist (`bench.md`); the measuring and the supervised check are bench work.
 3. Give the motion gate bench-measured limit values and the verified mapping.
    It has run against the real model only with a stand-in mapping.
-4. Capture the action the follower actually applied beside the requested
-   one. The processor step records measured and requested state only.
+4. Done: the processor step records what the follower reports it applied,
+   beside measured and requested, when the host passes it `send_action`'s
+   return value. Recording all three in a dataset is still to do.
 5. Decide where the operator arms, stops and clears from, and build it.
 6. Bench-verify shutdown, disconnect, hold and low-speed movement with the human
    operator. No automated test may energise the real arm.

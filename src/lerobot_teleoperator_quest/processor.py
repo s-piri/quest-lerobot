@@ -23,7 +23,12 @@ from lerobot.processor import (
 from .contracts import So101State, Telemetry
 from .control import DISARMED, Controller, Group, Step
 from .input import HANDS, action_sample, input_action
-from .so101 import FOLLOWER_KEYS, from_follower_observation, to_follower_action
+from .so101 import (
+    FOLLOWER_KEYS,
+    from_follower_action,
+    from_follower_observation,
+    to_follower_action,
+)
 
 
 def _prefixes(arm: str) -> tuple[str, str]:
@@ -49,7 +54,8 @@ class QuestControlStep(RobotActionProcessorStep):
         self._feedback: dict[str, Telemetry | None] = {}
         self._goal: dict[str, So101State] = {}
         self.steps: dict[str, Step] = {}  # each arm's latest decision
-        self.telemetry: dict[str, Telemetry] = {}  # measured, and the goal returned beside it
+        # Measured, the goal returned beside it, and what was applied once reported.
+        self.telemetry: dict[str, Telemetry] = {}
 
     def arm(self, calibration: str | Mapping[str, str]):
         """Give the current calibration fingerprint: one, or one per arm."""
@@ -119,6 +125,30 @@ class QuestControlStep(RobotActionProcessorStep):
             follower = _prefixes(arm)[1]
             goals |= {follower + key: value for key, value in to_follower_action(goal).items()}
         return goals
+
+    def applied(self, sent: RobotAction) -> None:
+        """Record what the follower says it actually sent for the goals just returned.
+
+        Pass the return value of `robot.send_action(...)`. The follower may clip
+        a goal, so this can differ from what was requested. Until it is called
+        for a tick, that tick's applied value stays None: it is never assumed.
+        """
+        if not isinstance(sent, Mapping):
+            raise ValueError("the sent action must be the follower's returned action")
+        states = {}
+        for arm in self.group.controllers:
+            prefix = _prefixes(arm)[1]
+            try:
+                own = {key: sent[prefix + key] for key in FOLLOWER_KEYS}
+            except KeyError as exc:
+                raise ValueError(f"the sent action lacks {exc.args[0]}") from exc
+            states[arm] = from_follower_action(own)
+        for arm, state in states.items():
+            record = self.telemetry.get(arm)
+            if record is not None:
+                self.telemetry[arm] = Telemetry(
+                    record.measured, record.requested, state, record.received_at
+                )
 
     @staticmethod
     def _measure(observation, prefix: str, at: float) -> Telemetry | None:

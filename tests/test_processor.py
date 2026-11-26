@@ -356,6 +356,51 @@ def test_headset_state_travels_from_the_step_through_the_real_listener(tmp_path)
         quest.disconnect()
 
 
+def test_what_the_follower_applied_is_recorded_only_when_it_is_reported():
+    rig = Rig()
+    rig.tick(pose())
+    rig.step.arm(CAL)
+    rig.tick(pose())
+    rig.tick(press())
+    requested = rig.tick(press(0.3), ticks=5)
+    before = rig.step.telemetry[""]
+    assert before.applied is None  # nothing has been reported for this tick
+
+    # A follower that clips: it moved the shoulder two degrees less than asked.
+    clipped = requested | {"shoulder_pan.pos": requested["shoulder_pan.pos"] - 2.0}
+    rig.step.applied(clipped)
+    record = rig.step.telemetry[""]
+    assert degrees(record.applied.joints_rad[0]) == pytest.approx(
+        requested["shoulder_pan.pos"] - 2.0
+    )
+    assert record.applied.joints_rad[0] < record.requested.joints_rad[0]
+    assert record.measured == before.measured  # a report changes neither of the others
+    assert record.requested == before.requested
+    stored = record.to_dict()
+    assert len({json.dumps(stored[key]) for key in ("measured", "requested", "applied")}) == 3
+
+    rig.tick(press(0.3))
+    assert rig.step.telemetry[""].applied is None  # a new tick, not yet reported
+
+    for bad in (None, [], {"shoulder_pan.pos": 1.0}, requested | {"gripper.pos": float("nan")}):
+        with pytest.raises(ValueError):
+            rig.step.applied(bad)
+    assert rig.step.telemetry[""].applied is None  # a refused report changes nothing
+
+
+def test_applied_is_recorded_per_arm_and_all_or_nothing():
+    two = Rig(bimanual=True)
+    sent = two.tick(frame(left=hand(), right=hand()))
+    two.step.applied(sent)
+    assert two.step.telemetry["left"].applied == two.step.telemetry["left"].requested
+    assert two.step.telemetry["right"].applied == two.step.telemetry["right"].requested
+
+    sent = two.tick(frame(left=hand(), right=hand()))
+    with pytest.raises(ValueError, match="right_"):
+        two.step.applied({key: value for key, value in sent.items() if key.startswith("left_")})
+    assert two.step.telemetry["left"].applied is None  # the left arm was not half-recorded
+
+
 def test_arm_names_must_match_the_official_follower_prefixes():
     with pytest.raises(ValueError, match="left"):
         QuestControlStep(Group({"a": controller(), "b": controller()}))

@@ -269,7 +269,10 @@ The pipeline returns the six follower `.pos` goals, or twelve prefixed
 `left_` and `right_` as the official bimanual SO follower expects. The host
 application calls `step.arm()`, `step.stop()` and `step.clear()`; each arm's
 latest decision is in `step.steps` and its measured and requested states in
-`step.telemetry`.
+`step.telemetry`. Pass the follower's reply to `step.applied(robot.send_action(goals))`
+and the telemetry also holds what was actually applied, which a follower that
+clips its goals can make differ from what was requested. Until then it is
+`None`, never a copy of the request.
 
 LeRobot's loops send an action on every tick, so when the gate decides to send
 nothing this step repeats the goal it returned last. Before it has returned
