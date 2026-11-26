@@ -23,8 +23,12 @@ class QuestConfig(TeleoperatorConfig):
     )
     cert: Path | None = None
     key: Path | None = None
+    # Two controllers: version-2 messages and quest.left.* / quest.right.* features.
+    bimanual: bool = False
 
     def __post_init__(self):
+        if type(self.bimanual) is not bool:
+            raise ValueError("bimanual must be a boolean")
         if type(self.port) is not int or not 0 <= self.port <= 65535:
             raise ValueError("port must be between 0 and 65535")
         if not isinstance(self.host, str) or not self.host:

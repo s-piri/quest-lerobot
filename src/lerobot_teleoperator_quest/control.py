@@ -5,6 +5,7 @@ feedback, a verified mapping and kinematics, and owns sending any command.
 Every time value must come from the same host monotonic clock as the input.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol
@@ -360,3 +361,75 @@ class Controller:
         )
         self._command = So101State(joints, _clamp(gripper, 0.0, 1.0))
         return Step(ENGAGED, self._command, "tracking")
+
+
+class Group:
+    """Several arms under one stop: a stop or fault in any arm stops them all.
+
+    Each arm keeps its own controller, mapping, limits and grip, so one hand can
+    hold while the other moves. Arming is all arms or none.
+    """
+
+    def __init__(self, controllers: Mapping[str, Controller]):
+        if not isinstance(controllers, Mapping) or not controllers:
+            raise ValueError("a group needs at least one controller")
+        if any(not isinstance(c, Controller) for c in controllers.values()):
+            raise ValueError("a group contains only controllers")
+        if len({id(c) for c in controllers.values()}) != len(controllers):
+            raise ValueError("each arm needs its own controller")
+        self.controllers = dict(controllers)
+        self._lock = Lock()
+
+    @property
+    def states(self) -> dict[str, str]:
+        return {name: controller.state for name, controller in self.controllers.items()}
+
+    def arm(self, feedback: Mapping, calibration: Mapping, now: float):
+        with self._lock:
+            armed = []
+            try:
+                for name, controller in self.controllers.items():
+                    controller.arm(feedback.get(name), calibration.get(name), now)
+                    armed.append(controller)
+            except (RuntimeError, ValueError):
+                for controller in armed:
+                    controller.disarm()
+                raise
+
+    def disarm(self):
+        with self._lock:
+            states = self.states
+            if any(state != ARMED for state in states.values()):
+                raise RuntimeError(f"cannot disarm while {states}; stop instead")
+            for controller in self.controllers.values():
+                controller.disarm()
+
+    def stop(self, reason: str = "stop requested"):
+        with self._lock:
+            for controller in self.controllers.values():
+                controller.stop(reason)
+
+    def clear(self):
+        with self._lock:
+            latched = [c for c in self.controllers.values() if c.state in (STOPPED, FAULTED)]
+            if not latched:
+                raise RuntimeError("there is no latched stop or fault to clear")
+            for controller in latched:
+                controller.clear()
+
+    def tick(self, inputs: Mapping, feedback: Mapping, now: float) -> dict[str, Step]:
+        """`inputs` maps each arm to its `(sample, session)`; `feedback` to its telemetry."""
+        with self._lock:
+            steps = {
+                name: controller.tick(*inputs.get(name, (None, 0)), feedback.get(name), now)
+                for name, controller in self.controllers.items()
+            }
+            latched = [name for name, step in steps.items() if step.state in (STOPPED, FAULTED)]
+            if latched and len(latched) < len(steps):
+                cause = steps[latched[0]]
+                reason = f"{latched[0] or 'arm'} {cause.state}: {cause.reason}"
+                for name, controller in self.controllers.items():
+                    if name not in latched:
+                        controller.stop(reason)
+                        steps[name] = controller.tick(None, 0, feedback.get(name), now)
+            return steps

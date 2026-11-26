@@ -8,7 +8,7 @@ if any(importlib.util.find_spec(name) is None for name in ("lerobot", "websocket
     pytest.skip("install .[lerobot] for the real integration gate", allow_module_level=True)
 
 from lerobot.teleoperators import make_teleoperator_from_config
-from test_input import pose
+from test_input import frame, hand, pose
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
@@ -165,3 +165,69 @@ def test_shutdown_closes_a_socket_before_websocket_handshake(quest):
             assert raw.recv(1) == b""
         except ConnectionResetError:
             pass
+
+
+@pytest.fixture
+def pair(tmp_path):
+    config = QuestConfig(port=0, calibration_dir=tmp_path, bimanual=True)
+    device = make_teleoperator_from_config(config)
+    yield device
+    device.disconnect()
+
+
+def test_bimanual_plugin_speaks_version_two_and_exports_both_hands(pair):
+    assert all(key.startswith(("quest.left.", "quest.right.")) for key in pair.action_features)
+    assert set(pair.feedback_features) == {
+        f"{arm}_{key}" for arm in ("left", "right") for key in FOLLOWER_KEYS
+    }
+    pair.connect()
+    with connect(pair.url) as ws:
+        ready = auth(ws, pair.access_token)
+        assert (ready["type"], ready["version"]) == ("ready", 2)
+        ws.send(json.dumps(frame(0, hand(), None)))
+        assert json.loads(ws.recv(timeout=2)) == {"type": "accepted", "seq": 0}
+        ws.send(json.dumps(frame(1, hand(True), hand(True))))
+        ws.recv(timeout=2)
+        action = pair.get_action()
+        assert set(action) == set(pair.action_features)
+        assert all(type(action[key]) is kind for key, kind in pair.action_features.items())
+        assert action["quest.left.grip"] is True
+        assert action["quest.right.active"] is True
+        assert action["quest.right.grip"] is False  # it appeared already pressed
+        assert not any(key.endswith(".pos") for key in action)
+
+        observation = {key: 0.0 for key in pair.feedback_features} | {"left_gripper.pos": 40.0}
+        pair.send_feedback(observation)
+        assert pair.feedback["left"]["measured"]["gripper"] == pytest.approx(0.4)
+        assert pair.feedback["right"]["measured"]["gripper"] == 0
+        assert pair.feedback["right"]["requested"] is None
+        with pytest.raises(ValueError):
+            pair.send_feedback(dict.fromkeys(FOLLOWER_KEYS, 0.0))  # one arm's keys only
+
+
+def test_bimanual_plugin_rejects_a_single_controller_message(pair):
+    pair.connect()
+    with connect(pair.url) as ws:
+        auth(ws, pair.access_token)
+        ws.send(json.dumps(frame(0, hand(), hand())))
+        ws.recv(timeout=2)
+        ws.send(json.dumps(pose(1)))
+        with pytest.raises(ConnectionClosed):
+            ws.recv(timeout=2)
+    action = pair.get_action()
+    assert not action["quest.left.active"] and not action["quest.right.active"]
+
+
+def test_single_plugin_rejects_a_two_hand_message_and_reports_version_one(quest):
+    quest.connect()
+    with connect(quest.url) as ws:
+        assert auth(ws, quest.access_token)["version"] == 1
+        ws.send(json.dumps(frame(0, hand(), hand())))
+        with pytest.raises(ConnectionClosed):
+            ws.recv(timeout=2)
+    assert not quest.get_action()["quest.active"]
+
+
+def test_bimanual_must_be_a_boolean():
+    with pytest.raises(ValueError, match="bimanual"):
+        QuestConfig(bimanual=1)

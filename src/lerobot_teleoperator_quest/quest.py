@@ -14,7 +14,7 @@ from websockets.sync.server import serve
 
 from .config import QuestConfig
 from .contracts import Telemetry
-from .input import InputBuffer, input_action
+from .input import HANDS, InputBuffer, frame_action
 from .so101 import FOLLOWER_KEYS, from_follower_observation
 
 
@@ -25,7 +25,7 @@ class Quest(Teleoperator):
     def __init__(self, config: QuestConfig):
         super().__init__(config)
         self.config = config
-        self._buffer = InputBuffer(timeout=config.timeout_s)
+        self._buffer = InputBuffer(timeout=config.timeout_s, bimanual=config.bimanual)
         self._server = None
         self._thread = None
         self._connection = None
@@ -33,7 +33,7 @@ class Quest(Teleoperator):
         self._accepting = False
         self._connection_lock = Lock()
         self._feedback_lock = Lock()
-        self._feedback: Telemetry | None = None
+        self._feedback: dict[str, Telemetry] | None = None
         self._token = secrets.token_urlsafe(32)
 
     @property
@@ -43,11 +43,23 @@ class Quest(Teleoperator):
 
     @property
     def action_features(self) -> dict:
-        return {key: type(value) for key, value in input_action(None, 0).items()}
+        empty = dict.fromkeys(self._arms)
+        return {key: type(value) for key, value in frame_action(empty, 0).items()}
+
+    @property
+    def _arms(self) -> tuple[str, ...]:
+        return HANDS if self.config.bimanual else ("",)
+
+    @staticmethod
+    def _follower_prefix(arm: str) -> str:
+        # The official bimanual SO follower prefixes each arm's keys this way.
+        return f"{arm}_" if arm else ""
 
     @property
     def feedback_features(self) -> dict:
-        return dict.fromkeys(FOLLOWER_KEYS, float)
+        return {
+            self._follower_prefix(arm) + key: float for arm in self._arms for key in FOLLOWER_KEYS
+        }
 
     @property
     def is_connected(self) -> bool:
@@ -144,7 +156,8 @@ class Quest(Teleoperator):
             if busy:
                 connection.close(1013, "input already has an owner")
                 return
-            connection.send(json.dumps({"type": "ready", "version": 1, "session": session}))
+            version = 2 if self.config.bimanual else 1
+            connection.send(json.dumps({"type": "ready", "version": version, "session": session}))
             for message in connection:
                 payload = json.loads(message)
                 self._buffer.submit(session, payload)
@@ -167,19 +180,30 @@ class Quest(Teleoperator):
     def get_action(self) -> dict:
         if not self.is_connected:
             raise RuntimeError("Quest input is disconnected")
-        return input_action(*self._buffer.snapshot())
+        return frame_action(*self._buffer.frame())
 
     def send_feedback(self, feedback: dict) -> None:
         if not self.is_connected:
             raise RuntimeError("Quest input is disconnected")
-        snapshot = Telemetry(from_follower_observation(feedback), None, None, monotonic())
+        if not isinstance(feedback, dict):
+            raise ValueError("feedback must be a follower observation")
+        now = monotonic()
+        snapshot = {}
+        for arm in self._arms:
+            prefix = self._follower_prefix(arm)
+            own = {key: feedback[prefix + key] for key in FOLLOWER_KEYS if prefix + key in feedback}
+            snapshot[arm] = Telemetry(from_follower_observation(own), None, None, now)
         with self._feedback_lock:
             self._feedback = snapshot
 
     @property
     def feedback(self) -> dict | None:
+        """Measured positions only: one record, or one per arm when bimanual."""
         with self._feedback_lock:
-            return None if self._feedback is None else self._feedback.to_dict()
+            if self._feedback is None:
+                return None
+            records = {arm: record.to_dict() for arm, record in self._feedback.items()}
+        return records if self.config.bimanual else records[""]
 
     def disconnect(self) -> None:
         if not self.is_connected:

@@ -2,7 +2,12 @@ import math
 
 import pytest
 
-from lerobot_teleoperator_quest.input import InputBuffer, input_action
+from lerobot_teleoperator_quest.input import (
+    InputBuffer,
+    action_sample,
+    frame_action,
+    input_action,
+)
 
 
 def pose(seq=0, grip=False, **changes):
@@ -133,3 +138,157 @@ def test_payload_is_owned_and_missing_keys_rejected():
 def test_timeout_must_be_finite_positive(timeout):
     with pytest.raises(ValueError):
         InputBuffer(timeout=timeout)
+
+
+def frame(seq=0, left=None, right=None):
+    return {"type": "pose", "version": 2, "seq": seq, "left": left, "right": right}
+
+
+def hand(grip=False, **changes):
+    return (
+        dict(position=[1, 2, 3], orientation=[0, 0, 0, 1], grip=grip, gripper=0.2, scale=0.25)
+        | changes
+    )
+
+
+def bimanual():
+    now = [10.0]
+    return InputBuffer(clock=lambda: now[0], bimanual=True), now
+
+
+def test_each_hand_has_its_own_release_gate():
+    buf, _ = bimanual()
+    session = buf.open_session()
+    buf.submit(session, frame(0, hand(), hand(True)))
+    buf.submit(session, frame(1, hand(True), hand(True)))
+    hands, owner = buf.frame()
+    assert owner == session
+    assert hands["left"].grip and not hands["right"].grip
+    buf.submit(session, frame(2, hand(True), hand()))
+    buf.submit(session, frame(3, hand(True), hand(True)))
+    hands = buf.frame()[0]
+    assert hands["left"].grip and hands["right"].grip
+    assert hands["left"].sequence == hands["right"].sequence == 3
+
+
+def test_a_hand_that_loses_tracking_must_release_again():
+    buf, _ = bimanual()
+    session = buf.open_session()
+    buf.submit(session, frame(0, hand(), hand()))
+    buf.submit(session, frame(1, hand(True), hand(True)))
+    buf.submit(session, frame(2, None, hand(True)))
+    hands = buf.frame()[0]
+    assert hands["left"] is None and hands["right"].grip
+    buf.submit(session, frame(3, hand(True), hand(True)))
+    hands = buf.frame()[0]
+    assert not hands["left"].grip and hands["right"].grip
+    buf.submit(session, frame(4))  # neither hand tracked is still a valid, ordered frame
+    assert buf.frame()[0] == {"left": None, "right": None}
+    with pytest.raises(ValueError, match="sequence"):
+        buf.submit(session, frame(4))
+
+
+def test_both_hands_go_stale_together_and_must_release_again():
+    buf, now = bimanual()
+    session = buf.open_session()
+    buf.submit(session, frame(0, hand(), hand()))
+    buf.submit(session, frame(1, hand(True), hand(True)))
+    now[0] += 0.201
+    assert buf.frame() == ({"left": None, "right": None}, session)
+    buf.submit(session, frame(2, hand(True), hand(True)))
+    hands = buf.frame()[0]
+    assert not hands["left"].grip and not hands["right"].grip
+
+
+def test_modes_do_not_accept_each_others_messages_or_accessors():
+    buf, _ = bimanual()
+    session = buf.open_session()
+    with pytest.raises(ValueError):
+        buf.submit(session, pose())
+    with pytest.raises(RuntimeError, match="frame"):
+        buf.snapshot()
+    with pytest.raises(RuntimeError, match="frame"):
+        buf.latest()
+    single, _ = buffer()
+    with pytest.raises(ValueError):
+        single.submit(single.open_session(), frame(0, hand(), hand()))
+    with pytest.raises(ValueError):
+        InputBuffer(bimanual=1)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        frame() | {"version": 1},
+        frame() | {"version": 3},
+        frame() | {"extra": 1},
+        {k: v for k, v in frame().items() if k != "right"},
+        frame(-1),
+        frame(True),
+        frame(0, left=[]),
+        frame(0, left=hand() | {"t": 1}),
+        frame(0, left={k: v for k, v in hand().items() if k != "scale"}),
+        frame(0, left=hand(grip=1)),
+        frame(0, right=hand(orientation=[0, 0, 0, 2])),
+        frame(0, right=hand(position=[0, math.inf, 0])),
+        frame(0, hand(), hand(gripper=-0.1)),
+        [],
+    ],
+)
+def test_bimanual_rejects_malformed_frames(payload):
+    buf, _ = bimanual()
+    session = buf.open_session()
+    with pytest.raises(ValueError):
+        buf.submit(session, payload)
+    assert buf.frame()[0] == {"left": None, "right": None}
+
+
+def test_exported_features_rebuild_the_same_sample_for_one_hand():
+    buf, _ = buffer()
+    session = buf.open_session()
+    buf.submit(session, pose())
+    buf.submit(session, pose(1, True))
+    action = frame_action(*buf.frame())
+    assert action == input_action(buf.latest(), session)
+    assert action_sample(action) == (buf.latest(), session)
+    buf.close_session(session)
+    assert action_sample(frame_action(*buf.frame())) == (None, 0)
+
+
+def test_exported_features_rebuild_each_hand_separately():
+    buf, _ = bimanual()
+    session = buf.open_session()
+    buf.submit(session, frame(0, hand(position=[4, 5, 6]), None))
+    hands, _ = buf.frame()
+    action = frame_action(hands, session)
+    assert all(key.startswith(("quest.left.", "quest.right.")) for key in action)
+    assert not any(key.endswith(".pos") for key in action)
+    assert action_sample(action, "quest.left.") == (hands["left"], session)
+    assert action_sample(action, "quest.right.") == (None, session)
+    with pytest.raises(ValueError, match=r"quest\.\* input features"):
+        action_sample(action)
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"quest.session": True},
+        {"quest.session": -1},
+        {"quest.active": 1},
+        {"quest.seq": 1.5},
+        {"quest.x": math.nan},
+        {"quest.qw": 3.0},
+        {"quest.grip": 1},
+        {"quest.gripper": 2},
+        {"quest.received_at": -1},
+        {"quest.scale": None},
+    ],
+)
+def test_malformed_exported_features_are_rejected(patch):
+    buf, _ = buffer()
+    session = buf.open_session()
+    buf.submit(session, pose())
+    with pytest.raises(ValueError):
+        action_sample(frame_action(*buf.frame()) | patch)
+    with pytest.raises(ValueError):
+        action_sample(None)
