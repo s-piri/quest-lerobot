@@ -47,3 +47,4 @@ select = ["E", "F", "I", "B", "UP"]
 # The same for the optional numpy and OpenCV.
 "tests/test_splat_calibrate.py" = ["E402"]
 "tests/test_splat_capture.py" = ["E402"]
+"tests/test_splat_masks.py" = ["E402"]

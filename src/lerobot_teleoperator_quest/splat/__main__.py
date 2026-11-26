@@ -43,9 +43,39 @@ def _export(args) -> None:
             "  Few views were kept. A splat usually needs many more, from many directions: "
             "scan longer and move the camera around the scene."
         )
+    if args.meshes is not None:
+        _masks(args, setup)
+    else:
+        print("  No masks were made, so the gripper will be reconstructed as part of the scene.")
+        print("  Add --meshes with the folder of arm meshes (client/assets) to hide it.")
     print("  Poses are in the arm's base frame, in metres. They are a starting guess from the")
     print("  joints: let reconstruction refine them, and tell the trainer not to re-orient,")
     print("  re-centre or re-scale them.")
+
+
+def _masks(args, setup: Setup) -> None:
+    try:
+        from .masks import load_meshes, write_masks
+    except ImportError as error:
+        raise ValueError(
+            f"masks need numpy and OpenCV, which are not installed ({error.name}). "
+            'Install the "splat" extra, or export without --meshes'
+        ) from error
+    result = write_masks(
+        args.out, setup.camera, load_meshes(args.meshes, setup.camera), margin=args.mask_margin
+    )
+    least, most = round(result["least_hidden"] * 100), round(result["most_hidden"] * 100)
+    span = f"{least}%" if least == most else f"{least}% to {most}%"
+    print(f"  Masks hide the gripper: {span} of each picture.")
+    if result["check"]:
+        print(f"  Open {args.out / result['check']} to check them:")
+        print("  red must cover the whole gripper and little else.")
+    if most == 0:
+        print("  <- nothing was hidden: the camera's mount is probably wrong. Recalibrate it.")
+    elif most > 60:
+        print(
+            "  <- most of the picture is hidden: check the camera's mount, or lower --mask-margin."
+        )
 
 
 def _calibrate(args) -> None:
@@ -136,6 +166,10 @@ def main(argv=None) -> int:
     )
     command.add_argument(
         "--any-speed", action="store_true", help="keep views whatever the camera speed"
+    )
+    command.add_argument("--meshes", type=Path, help="folder of arm meshes, to mask the gripper")
+    command.add_argument(
+        "--mask-margin", type=int, default=12, help="pixels to grow each mask by (12)"
     )
     args = parser.parse_args(argv)
     try:

@@ -25,8 +25,8 @@
   verification.
 - Splat steps 1 and 2 as code, tested on synthetic data only: taking a
   recording, calibrating the wrist camera's lens and mount from board shots,
-  and exporting images with camera poses for nerfstudio-style trainers and
-  COLMAP. See `splat.md`.
+  and exporting images with camera poses and gripper masks for
+  nerfstudio-style trainers and COLMAP. See `splat.md`.
 - The upstream SO-101 URDF packaged with provenance, with standard-library
   forward and inverse kinematics. Forward kinematics matches an independent
   URDF library; the gate has driven the model to Cartesian targets in tests.
@@ -103,8 +103,9 @@ have only run on synthetic data:
 2. Calibrate the camera's lens and its camera-to-wrist transform from still
    shots of a printed board. How closely the views agree on where the board is
    also checks the joint mapping.
-3. Record a dedicated slow scan of a static scene with exposure locked, and
-   mask the gripper. Ordinary teleoperation recordings will not do: things move.
+3. Record a dedicated slow scan of a static scene with exposure locked.
+   Ordinary teleoperation recordings will not do: things move. The export
+   masks the gripper from the arm's meshes; check its picture of the mask.
 4. Reconstruct and train on the GPU, then check the result against the arm.
 5. Draw the splat in the page, registered to the arm's base, and measure what
    a standalone headset can render smoothly.

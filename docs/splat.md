@@ -104,7 +104,7 @@ are where a timing error between picture and joints costs most.
 ```bash
 python -m lerobot_teleoperator_quest.splat export scene_scan \
     --setup left_setup_with_camera.json --calibration <the arm's calibration file> \
-    --out scene
+    --meshes client/assets --out scene
 ```
 
 It keeps a frame only when the camera has moved 1 cm or turned 3° since the
@@ -117,6 +117,24 @@ trainers, a `colmap/` text model with known poses, and `report.json`. Poses
 are in the arm's base frame, in metres. COLMAP's own library was used once to
 confirm it reads the model and projects points where intended.
 
+### Hiding the gripper
+
+The wrist camera always sees the gripper it sits on. Left in, the gripper
+would be reconstructed as an object floating beside every viewpoint. With
+`--meshes`, each view gets a mask in `masks/`: white where the picture is
+scene, black over the gripper. The masks are named as COLMAP expects (the
+image's name with `.png` added) and listed in `transforms.json`.
+
+A mask is drawn from the arm's meshes through the calibrated camera, then
+grown by a margin (`--mask-margin`, 12 pixels by default), because printed
+parts, the camera mount and the meshes never agree exactly. The moving jaw's
+angle is a straight-line guess from the gripper reading. So **open
+`masks_check.png`** in the scene folder: it shows the first view with the
+masked area in red, which must cover the whole gripper and little else. If it
+is off, the camera's mount calibration is the first thing to redo. If the jaw
+is the only part missed, keep the gripper closed during the scan and raise the
+margin.
+
 ## What comes after, and what to expect
 
 The poses are a starting guess. Servo backlash and link flex put them off by
@@ -125,6 +143,5 @@ COLMAP triangulating and adjusting from the known poses, or the trainer's own
 pose optimisation. Tell the trainer **not** to re-orient, re-centre or re-scale
 the poses, or the splat will no longer sit in the arm's base frame.
 
-Still to build: masking the gripper out of the pictures, running the
-reconstruction, checking the result against the arm, and drawing it in the
-headset.
+Still to build: running the reconstruction, checking the result against the
+arm, and drawing it in the headset.

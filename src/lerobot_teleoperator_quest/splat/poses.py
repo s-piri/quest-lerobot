@@ -290,6 +290,8 @@ def export(
         "kept": len(kept),
         "dropped": dropped,
         "source_frames": [shots[index].image for index in kept],
+        # The gripper opening at each kept view, which decides where the jaw is.
+        "gripper": [state_at(shots, shots[index].time - camera_delay).gripper for index in kept],
         "options": {
             "camera_delay": camera_delay,
             "min_move": min_move,

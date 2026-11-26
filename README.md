@@ -34,7 +34,7 @@ starting with explicit SO-101 contracts. Python 3.12 or newer.
   the limp arm. The procedure is in [docs/bench.md](docs/bench.md).
 - The first steps toward a scene splat (`splat/`, an optional install):
   taking a recording, calibrating the wrist camera's lens and mount, and
-  exporting images with camera poses for reconstruction. See
+  exporting images with camera poses and gripper masks for reconstruction. See
   [docs/splat.md](docs/splat.md). Tested on synthetic data only.
 - Wheel installation and actual upstream plugin discovery checks.
 
