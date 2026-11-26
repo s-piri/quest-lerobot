@@ -50,6 +50,12 @@ Arm lag and gripper stalls are useful measured state. Replacing measurements
 with targets silently corrupts demonstrations. Missing applied values are None,
 not copies of requested values.
 
+**A hold latches one measurement; limits never pull the arm inward on their own.**
+Re-seeding the hold from each new measurement lets gravity sag walk the goal
+downward. Clamping a state that starts outside a limit moves the arm with no
+movement of the hand, so limits only refuse motion further out. The first
+command of a grip is exactly the measured state, and arming sends nothing.
+
 **Invalidate input before closing the socket — do not move it after `close()`.**
 A closing WebSocket handshake can wait on the peer. Keeping the last armed
 sample alive during that wait exposes it after input has already been rejected.

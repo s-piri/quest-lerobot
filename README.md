@@ -12,11 +12,16 @@ starting with explicit SO-101 contracts. Python 3.12 or newer.
 - Separate immutable measured state, requested command and applied command.
 - Official SO-101 `.pos` names, degree/radian and gripper 0–100/0–1 conversions.
 - Explicit URDF zero/sign mapping bound to a calibration-file fingerprint.
+- A host-ticked motion gate (`control.py`): starts disarmed, anchors each grip
+  from measured state, latches scale, applies joint, speed, gripper and
+  workspace limits, and latches stops and stale-feedback faults.
 - Wheel installation and actual upstream plugin discovery checks.
 
 This milestone receives and validates input. **It does not drive the arm.**
-The observation-aware IK processor, verified physical mapping, Quest browser
-client and hardware runner are the next milestone. The stock
+The motion gate is tested only against a fake follower and a toy stand-in for
+kinematics; it has no SO-101 model, no limit values and no connection to a
+robot. Real FK/IK, the verified physical mapping, LeRobot processor
+composition, the Quest browser client and the hardware runner come next. The stock
 `lerobot-teleoperate --teleop.type=quest` identity processor cannot convert
 these Cartesian input features into follower joint actions.
 
@@ -103,6 +108,26 @@ standard loop does not automatically call it; the future application must pass
 observations explicitly. Requested/applied commands stay unavailable unless
 captured independently by their owner. The input plugin cannot provide an
 arm watchdog, IK limits, a stop latch or recording semantics by itself.
+
+## Motion gate
+
+`Controller.tick(sample, session, feedback, now)` is called at the control rate
+whether or not input arrived, and returns a `Step` whose `command` is a request
+for the caller to send, or `None` to send nothing. It needs a `UrdfMapping`,
+explicit `Limits` (there are no SO-101 defaults), the WebXR-to-base rotation and
+an object providing `fk` and `ik`. All timestamps must come from the same host
+monotonic clock as the input.
+
+- `arm()` needs fresh measured feedback and the mapped calibration fingerprint,
+  and sends nothing. Motion needs a grip release and then a press, again after
+  any input gap, reconnection, stop or fault.
+- Releasing, stale input or a new session holds at the state measured at that
+  moment. `stop()` latches until `clear()`, which returns to disarmed.
+- Stale feedback latches a fault and sends nothing, because an unknown arm
+  state must not seed a hold or a target.
+
+A stop here is software state. Nothing in this process can act after the host
+stops running, the USB link drops or power is lost.
 
 ## Development
 

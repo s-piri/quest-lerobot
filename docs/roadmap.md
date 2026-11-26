@@ -7,6 +7,10 @@
 - Real upstream Quest teleoperator registration and factory creation.
 - Authenticated, single-owner WebSocket controller input with host-side timeout.
 - Offline tests, independent wheel install and upstream discovery checks.
+- Motion gate core: disarmed start, measured-state grip anchoring, latched
+  scale, joint/speed/gripper/workspace limits, input and feedback watchdogs,
+  latched stop, and release/re-press after any gap or reconnection. Tested with
+  a fake follower that lags and jams, and a toy stand-in for kinematics.
 
 ## Next: observation-aware control processor
 
@@ -18,11 +22,11 @@ Before enabling physical movement:
 2. Verify each calibrated follower joint's zero/direction against that model.
    Bind the mapping to the existing official robot ID/calibration; never
    recalibrate or rewrite EEPROM silently.
-3. Re-anchor every grip from measured FK. Latch scale on engage and apply
-   Cartesian workspace, joint, velocity and gripper limits.
-4. Add a host-ticked motion gate, latched stop, stale-feedback faults and
-   release/re-press after reconnect. The input timeout alone is not this gate.
-5. Test with a fake follower whose measured state lags and whose gripper jams.
+3. Give the motion gate the real FK/IK and bench-measured limit values. Its
+   anchoring and limit logic exist but have only run against a toy model.
+4. Compose the gate with Quest input and follower observations through
+   LeRobot's processor API, and capture the action actually applied.
+5. Repeat the fake-follower tests through that composition.
 6. Bench-verify shutdown, disconnect, hold and low-speed movement with the human
    operator. No automated test may energise the real arm.
 
