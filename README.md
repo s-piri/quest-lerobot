@@ -184,7 +184,9 @@ While no sample is flowing the page sends `{"type":"ping"}`, which is not
 input and keeps nothing alive: it only lets the host deliver its state, so the
 picture keeps up before the headset view starts and while a hand is out of
 sight. Without a host, `?pose=0.6,-0.5,0.7,0.6,0.3,0.1` shows that pose,
-`?state=<JSON>` a whole host state, and `?panel=1` the headset panel.
+`?state=<JSON>` a whole host state, and `?panel=1` the headset panel. The
+picture on the page can be dragged to look from another side, and
+`&view=90,10` sets the angle in a link.
 
 The plugin does not serve it: host the `client/` folder over HTTPS yourself, list
 that exact origin in `origins`, and give the listener a certificate the headset

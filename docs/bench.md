@@ -27,7 +27,10 @@ slowly under supervision.
 
 You copy six poses from the model onto the real arm, with the motors limp, and
 note the follower's readings at each. Open the client page on any computer to
-see each pose; the address after `index.html` selects it.
+see each pose; the address after `index.html` selects it. Drag the picture to
+look at the arm from another side, or add a view to the address: `&view=0,10`
+looks from the arm's right side, `&view=90,10` from the front, `&view=-90,10`
+from behind and `&view=0,85` from above.
 
 | Pose | Page address | What changes from the zero pose |
 |---|---|---|

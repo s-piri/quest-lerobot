@@ -88,6 +88,8 @@
       }
       #preview {
         aspect-ratio: 4 / 3;
+        cursor: grab;
+        touch-action: none; /* dragging turns the view instead of scrolling the page */
       }
       #panel[hidden] {
         display: none;
@@ -155,6 +157,7 @@
     <h2>The arm</h2>
     <p class="hint" id="previewNote"></p>
     <canvas id="preview" width="800" height="600" aria-label="The arm as the host reports it"></canvas>
+    <p class="hint">Drag the picture to look at the arm from another side.</p>
     <canvas id="panel" width="1024" height="640" hidden aria-hidden="true"></canvas>
 
     <script type="module">
@@ -412,6 +415,38 @@
 
       const canvas = $("preview");
       const flat = canvas.getContext("webgl", { antialias: true });
+
+      // Where the flat preview is seen from: dragging turns the view around the
+      // arm. "?view=yaw,pitch" in degrees sets it, for a link to one side.
+      const ORBIT_TARGET = [0, 0.14, 0];
+      const orbit = { yaw: -0.34, pitch: 0.33 };
+      const asked = numbers(query.get("view"));
+      if (asked?.length === 2 && asked.every(Number.isFinite)) {
+        orbit.yaw = (asked[0] * Math.PI) / 180;
+        orbit.pitch = (asked[1] * Math.PI) / 180;
+      }
+      const orbitEye = (distance) => {
+        const pitch = Math.min(1.5, Math.max(-1.5, orbit.pitch));
+        return [
+          ORBIT_TARGET[0] + distance * Math.sin(orbit.yaw) * Math.cos(pitch),
+          ORBIT_TARGET[1] + distance * Math.sin(pitch),
+          ORBIT_TARGET[2] + distance * Math.cos(orbit.yaw) * Math.cos(pitch),
+        ];
+      };
+      let dragging = null;
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = { x: event.clientX, y: event.clientY };
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!dragging) return;
+        orbit.yaw -= (event.clientX - dragging.x) * 0.01;
+        orbit.pitch = Math.min(1.5, Math.max(-1.5, orbit.pitch + (event.clientY - dragging.y) * 0.01));
+        dragging = { x: event.clientX, y: event.clientY };
+      });
+      for (const done of ["pointerup", "pointercancel"]) {
+        canvas.addEventListener(done, () => (dragging = null));
+      }
       let flatRenderer = null;
       function drawPreview() {
         requestAnimationFrame(drawPreview);
@@ -419,11 +454,9 @@
         flat.viewport(0, 0, canvas.width, canvas.height);
         flat.clearColor(0.125, 0.14, 0.17, 1);
         flat.clear(flat.COLOR_BUFFER_BIT | flat.DEPTH_BUFFER_BIT);
-        const wide = Object.keys(arms).length > 1;
-        const eye = wide ? [0.0, 0.42, 1.05] : [-0.25, 0.4, 0.7];
         const viewProjection = matMul(
           perspective(0.75, canvas.width / canvas.height, 0.05, 10),
-          lookAt(eye, [0, 0.14, 0], [0, 1, 0]),
+          lookAt(orbitEye(Object.keys(arms).length > 1 ? 1.15 : 0.8), ORBIT_TARGET, [0, 1, 0]),
         );
         const places = previewPlacements();
         drawArms(flatRenderer, viewProjection, places);
