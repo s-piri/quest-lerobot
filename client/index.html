@@ -8,15 +8,28 @@
       :root {
         color-scheme: light dark;
         font: 18px/1.5 system-ui, sans-serif;
+        --go: #2f9e52;
+        --wait: #8a909c;
+        --warn: #c98a12;
+        --stop: #d8402f;
       }
       body {
         max-width: 34rem;
         margin: 2rem auto;
-        padding: 0 1rem;
+        padding: 0 1rem 3rem;
+      }
+      h2 {
+        margin: 2rem 0 0;
+        font-size: 1.15rem;
       }
       label {
         display: block;
         margin-top: 1rem;
+      }
+      label.check {
+        display: flex;
+        gap: 0.6rem;
+        align-items: flex-start;
       }
       input,
       select,
@@ -26,32 +39,84 @@
         box-sizing: border-box;
         padding: 0.5rem;
       }
+      input[type="checkbox"] {
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: none;
+        margin-top: 0.15rem;
+      }
       button {
         margin-top: 1.25rem;
       }
+      .hint {
+        margin: 0.4rem 0 0;
+        font-size: 0.9rem;
+        opacity: 0.8;
+      }
+      /* Always in view: the page is tall, and this is what says what to do next. */
       #status {
-        margin-top: 1.25rem;
-        padding: 0.75rem;
-        border: 1px solid;
-        white-space: pre-wrap;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        margin: 1rem 0 0;
+        padding: 0.5rem 0;
+        list-style: none;
+        background: Canvas;
+      }
+      #status li {
+        margin: 0.35rem 0;
+        padding: 0.5rem 0.75rem;
+        border-left: 0.4rem solid var(--wait);
+        background: color-mix(in srgb, CanvasText 7%, Canvas);
+      }
+      #status li.go {
+        border-color: var(--go);
+      }
+      #status li.warn {
+        border-color: var(--warn);
+      }
+      #status li.stop {
+        border-color: var(--stop);
+        font-weight: 600;
+      }
+      #preview,
+      #panel {
+        display: block;
+        width: 100%;
+        margin-top: 0.75rem;
+        background: #20242b;
+      }
+      #preview {
+        aspect-ratio: 4 / 3;
+      }
+      #panel[hidden] {
+        display: none;
       }
     </style>
   </head>
   <body>
     <h1>Quest input for LeRobot</h1>
     <p>
-      This page only sends controller poses. Squeezing the grip is the deadman: release it and the
-      host stops following. It is not an emergency stop.
+      This page sends your controller poses to the host and draws the arm the host reports.
+      Squeezing the grip is the deadman: let go and the host stops following. It is not an
+      emergency stop.
     </p>
 
+    <ul id="status" role="status" aria-live="polite"></ul>
+
+    <h2>1. Pair with the host</h2>
     <label>
       Listener address
       <input id="url" placeholder="wss://host-name:8765" autocomplete="off" spellcheck="false" />
     </label>
     <label>
-      Pairing token (shown by the host for this run only)
+      Pairing token
       <input id="token" type="password" autocomplete="off" spellcheck="false" />
     </label>
+    <p class="hint">
+      The host shows both for each run, and can give you a link that fills them in. The token
+      changes every time the host starts.
+    </p>
     <label>
       Controllers
       <select id="mode">
@@ -60,135 +125,577 @@
         <option value="both">Both hands, two arms</option>
       </select>
     </label>
+    <button id="connect">Connect</button>
+
+    <h2>2. How you move the arm</h2>
+    <label class="check">
+      <input id="grab" type="checkbox" checked />
+      <span>
+        Grab the virtual gripper to move it. A ball marks the spot: it turns green when your hand
+        is close enough, and your hand and the gripper then move together, one to one.
+      </span>
+    </label>
+    <label class="check">
+      <input id="previewFirst" type="checkbox" />
+      <span>
+        Preview first. The virtual arm follows your hand, and the real arm moves only while you
+        also hold A (right hand) or X (left hand).
+      </span>
+    </label>
     <label>
       Motion scale: <output id="scaleValue">0.25</output>
       <input id="scale" type="range" min="0.05" max="1" step="0.05" value="0.25" />
     </label>
+    <p class="hint" id="scaleHint"></p>
 
-    <button id="connect">Connect</button>
+    <h2>3. Go</h2>
     <button id="enter" disabled>Enter headset view</button>
-    <div id="status" role="status">Not connected.</div>
+    <p class="hint" id="enterHint"></p>
+
+    <h2>The arm</h2>
+    <p class="hint" id="previewNote"></p>
+    <canvas id="preview" width="800" height="600" aria-label="The arm as the host reports it"></canvas>
+    <canvas id="panel" width="1024" height="640" hidden aria-hidden="true"></canvas>
 
     <script type="module">
-      import { auth, expectedVersion, hand, message } from "./protocol.js";
+      import { armFor, auth, expectedVersion, grabbed, hand, message, ping } from "./protocol.js";
+      import {
+        about,
+        drawList,
+        facing,
+        jointValues,
+        lookAt,
+        markerMatrix,
+        matMul,
+        perspective,
+        placeToolAt,
+        rotate,
+        toolPosition,
+      } from "./arm.js";
+      import { ArmRenderer, PanelRenderer, loadModel } from "./render.js";
+      import { addressProblem, alerts, closeMessage, statusLines } from "./guide.js";
+      import { paintPanel } from "./panel.js";
 
       const $ = (id) => document.getElementById(id);
-      const say = (text) => ($("status").textContent = text);
+      const GHOST = [0.55, 0.8, 1.0];
+      const HALTED = [1.0, 0.35, 0.3];
+      const UNREACHABLE = [1.0, 0.6, 0.2];
+      const REACH = 0.12; // metres from the virtual gripper within which a squeeze takes hold
+      const BALL = { far: [0.8, 0.8, 0.8, 1], near: [0.35, 0.85, 0.45, 1], held: [0.3, 0.6, 1.0, 1] };
+      const HEADSET_HINT = {
+        tone: "wait",
+        text: "Press a thumbstick to bring the arm and this panel back in front of you.",
+      };
 
       let socket = null;
-      let ready = false;
+      let connection = "offline"; // "offline" | "connecting" | "paired"
+      let notice = null; // one thing that just went wrong, until the next attempt
       let awaitingAck = false;
       let seq = 0;
+      let lastSent = 0;
       let mode = "right";
       let xr = null;
+      let model = null; // { scene, meshes }
+      let modelProblem = null;
+      let arms = {}; // the host's latest state: arm name to { state, reason, base, measured, goal }
+      let lastStateAt = null;
+      let staleOverride = 0;
+      let placements = {}; // where each virtual arm stands in the headset's space
+      let panelAnchor = null;
+      let tracked = { left: false, right: false };
+      const pads = {};
+      const memory = { left: { held: false, squeezed: false }, right: { held: false, squeezed: false } };
+      const stick = { left: false, right: false };
 
-      // A link may carry the address and token after "#", which browsers never send to a server.
+      // ---- settings that survive a reload (never the token) ---------------
+
+      const SAVED = "quest-lerobot-client";
+      try {
+        const saved = JSON.parse(localStorage.getItem(SAVED) ?? "{}");
+        if (typeof saved.url === "string") $("url").value = saved.url;
+        if (saved.mode) $("mode").value = saved.mode;
+        if (typeof saved.grab === "boolean") $("grab").checked = saved.grab;
+        if (typeof saved.previewFirst === "boolean") $("previewFirst").checked = saved.previewFirst;
+        if (saved.scale) $("scale").value = saved.scale;
+      } catch {
+        // Private browsing or a damaged entry: start from the defaults.
+      }
+      const remember = () => {
+        try {
+          const saved = {
+            url: $("url").value.trim(),
+            mode: $("mode").value,
+            grab: $("grab").checked,
+            previewFirst: $("previewFirst").checked,
+            scale: $("scale").value,
+          };
+          localStorage.setItem(SAVED, JSON.stringify(saved));
+        } catch {
+          // Nothing to do: the settings simply will not be remembered.
+        }
+      };
+
+      // A link from the host may carry the address and token after "#", which
+      // browsers never send to a server. It wins over what was remembered.
       const given = new URLSearchParams(location.hash.slice(1));
-      $("url").value = given.get("url") ?? "";
-      $("token").value = given.get("token") ?? "";
+      if (given.get("url")) $("url").value = given.get("url");
+      if (given.get("token")) $("token").value = given.get("token");
       if (given.get("mode")) $("mode").value = given.get("mode");
       history.replaceState(null, "", location.pathname + location.search);
+      mode = $("mode").value;
 
+      // For trying the page without a host: "?pose=j1,j2,j3,j4,j5,gripper" (and
+      // "&goal=...") shows that pose, "?state=<JSON>" shows a whole host state,
+      // and "?panel=1" also shows the panel that floats in the headset.
+      const query = new URLSearchParams(location.search);
+      const numbers = (text) => (text ? text.split(",").map(Number) : null);
+      const example = (pose, goal) => ({ state: "demo", reason: "demo", base: [0, 0, 0, 1], measured: pose, goal });
+      arms = { "": example(numbers(query.get("pose")) ?? [0, 0, 0, 0, 0, 0.5], numbers(query.get("goal"))) };
+      if (query.get("state")) {
+        const shown = JSON.parse(query.get("state"));
+        arms = shown.arms ?? {};
+        connection = shown.connection ?? "paired";
+        mode = shown.mode ?? mode;
+        $("mode").value = mode;
+        staleOverride = shown.stale ?? 0;
+        notice = shown.notice ?? null;
+      }
+      $("panel").hidden = query.get("panel") !== "1";
+
+      // ---- what the operator is told -------------------------------------
+
+      const view = (inHeadset) => ({
+        connection,
+        arms,
+        mode,
+        grab: $("grab").checked,
+        tracked,
+        inHeadset,
+        staleSeconds: lastStateAt === null ? staleOverride : (performance.now() - lastStateAt) / 1000,
+      });
+
+      function lines(inHeadset) {
+        const out = statusLines(view(inHeadset));
+        if (modelProblem) out.unshift({ tone: "warn", text: modelProblem });
+        if (notice) out.unshift({ tone: "warn", text: notice });
+        return out;
+      }
+
+      // The panel in the headset. The tip about the thumbstick gives way whenever
+      // there is something the operator has to act on, so that stays large.
+      function panelLines() {
+        const out = lines(true);
+        const calm = out.every((line) => line.tone === "go" || line.tone === "wait");
+        return calm ? [...out, HEADSET_HINT] : out;
+      }
+
+      let shownStatus = "";
+      function refresh() {
+        const now = lines(false);
+        const key = JSON.stringify(now);
+        if (key !== shownStatus) {
+          shownStatus = key;
+          $("status").replaceChildren(
+            ...now.map((line) => {
+              const item = document.createElement("li");
+              item.className = line.tone;
+              item.textContent = line.text;
+              return item;
+            }),
+          );
+        }
+        $("connect").textContent =
+          connection === "offline" ? "Connect" : connection === "connecting" ? "Cancel" : "Disconnect";
+        $("mode").disabled = connection !== "offline";
+
+        const grabbing = $("grab").checked;
+        $("scale").disabled = grabbing;
+        $("scaleHint").textContent = grabbing
+          ? "Not used while you grab the virtual gripper: that is always one to one."
+          : "How far the arm moves for a given hand movement. Squeeze anywhere to move.";
+
+        $("enter").disabled = !navigator.xr || connection !== "paired" || xr !== null;
+        $("enterHint").textContent = !navigator.xr
+          ? "This browser cannot open a headset view. You can still watch the arm on this page."
+          : xr
+            ? "The headset view is open."
+            : connection !== "paired"
+              ? "Connect to the host first."
+              : "";
+
+        const drawable = Object.values(arms).some((arm) => arm.measured);
+        $("previewNote").textContent = drawable
+          ? "Solid: where your hand asks the arm to be. Faint blue: where the arm is."
+          : `Nothing is drawn yet. ${now.at(-1)?.text ?? ""}`;
+
+        if (!$("panel").hidden) paintPanel($("panel"), panelLines());
+      }
+
+      for (const id of ["url", "mode", "grab", "previewFirst", "scale"]) {
+        $(id).addEventListener("change", () => {
+          remember();
+          refresh();
+        });
+      }
       $("scale").addEventListener("input", () => ($("scaleValue").value = $("scale").value));
+      $("scaleValue").value = $("scale").value;
+      setInterval(refresh, 500); // the "no update for N s" line changes on its own
+
+      // ---- a buzz in the hand --------------------------------------------
+
+      function pulse(side, strength, milliseconds) {
+        const pad = pads[side];
+        try {
+          if (pad?.hapticActuators?.[0]?.pulse) pad.hapticActuators[0].pulse(strength, milliseconds);
+          else pad?.vibrationActuator?.playEffect?.("dual-rumble", { duration: milliseconds, strongMagnitude: strength });
+        } catch {
+          // No haptics on this controller: the panel still says what happened.
+        }
+      }
+
+      function buzz(events) {
+        for (const event of events) {
+          if (event.kind === "stop") {
+            pulse("left", 1, 300);
+            pulse("right", 1, 300);
+          } else {
+            pulse(mode === "both" ? event.arm : mode, 0.4, 80);
+          }
+        }
+      }
+
+      // ---- drawing -------------------------------------------------------
+
+      function drawArms(renderer, viewProjection, places) {
+        const ghosts = [];
+        for (const [name, arm] of Object.entries(arms)) {
+          const placed = places[name];
+          if (!placed || !arm.measured) continue;
+          const measured = drawList(model.scene, jointValues(model.scene, arm.measured), placed);
+          if (arm.goal) {
+            const unreachable = arm.reason === "inverse kinematics rejected the target";
+            const goal = drawList(model.scene, jointValues(model.scene, arm.goal), placed);
+            renderer.draw(viewProjection, goal, 1, unreachable ? UNREACHABLE : null);
+            ghosts.push(measured);
+          } else {
+            const halted = arm.state === "stopped" || arm.state === "faulted";
+            renderer.draw(viewProjection, measured, 1, halted ? HALTED : null);
+          }
+        }
+        // Ghosts last: they are blended over everything already drawn.
+        for (const list of ghosts) renderer.draw(viewProjection, list, 0.35, GHOST);
+      }
+
+      function toolOf(name, places) {
+        const arm = arms[name];
+        const shown = arm?.goal ?? arm?.measured;
+        if (!model || !shown || !places[name]) return null;
+        return toolPosition(model.scene, jointValues(model.scene, shown), places[name]);
+      }
+
+      function drawBall(renderer, viewProjection, at, radius, color) {
+        renderer.draw(viewProjection, [{ mesh: "#ball", color, matrix: markerMatrix(at, radius) }]);
+      }
+
+      // The flat preview stands the arm upright (its z axis up the screen) and looks from the front left.
+      const upright = about([1, 0, 0], -Math.PI / 2);
+      function previewPlacements() {
+        const names = Object.keys(arms).sort();
+        const places = {};
+        names.forEach((name, index) => {
+          const x = names.length > 1 ? (index === 0 ? -0.3 : 0.3) : 0;
+          // "base" is ignored here: the preview always shows each arm from the same side.
+          places[name] = { position: [x - 0.18, 0, 0], orientation: upright };
+        });
+        return places;
+      }
+
+      const canvas = $("preview");
+      const flat = canvas.getContext("webgl", { antialias: true });
+      let flatRenderer = null;
+      function drawPreview() {
+        requestAnimationFrame(drawPreview);
+        if (!flatRenderer || xr) return;
+        flat.viewport(0, 0, canvas.width, canvas.height);
+        flat.clearColor(0.125, 0.14, 0.17, 1);
+        flat.clear(flat.COLOR_BUFFER_BIT | flat.DEPTH_BUFFER_BIT);
+        const wide = Object.keys(arms).length > 1;
+        const eye = wide ? [0.0, 0.42, 1.05] : [-0.25, 0.4, 0.7];
+        const viewProjection = matMul(
+          perspective(0.75, canvas.width / canvas.height, 0.05, 10),
+          lookAt(eye, [0, 0.14, 0], [0, 1, 0]),
+        );
+        const places = previewPlacements();
+        drawArms(flatRenderer, viewProjection, places);
+        if ($("grab").checked) {
+          for (const name of Object.keys(arms)) {
+            const tool = toolOf(name, places);
+            if (tool) drawBall(flatRenderer, viewProjection, tool, 0.02, BALL.far);
+          }
+        }
+      }
+
+      loadModel()
+        .then((loaded) => {
+          model = loaded;
+          if (flat) flatRenderer = new ArmRenderer(flat, model.meshes);
+          document.documentElement.dataset.model = "ready";
+          requestAnimationFrame(drawPreview);
+        })
+        .catch((error) => {
+          document.documentElement.dataset.model = "failed";
+          modelProblem = `The arm model could not be loaded, so the arm will not be drawn. Controller input still works. (${error.message})`;
+          refresh();
+        });
+
+      // ---- the listener --------------------------------------------------
+
+      function send(payload) {
+        socket.send(JSON.stringify(payload));
+        lastSent = performance.now();
+      }
+
+      // While no sample is flowing, ask for the host's state so the picture keeps up.
+      setInterval(() => {
+        if (connection !== "paired" || socket?.readyState !== WebSocket.OPEN) return;
+        if (!awaitingAck && performance.now() - lastSent >= 100) send(ping());
+      }, 50);
 
       $("connect").addEventListener("click", () => {
-        socket?.close();
+        if (connection !== "offline") {
+          socket?.close(1000);
+          return;
+        }
+        notice = addressProblem($("url").value, location.protocol === "https:");
+        if (!notice && !$("token").value) notice = "Enter the pairing token the host shows for this run.";
+        if (notice) {
+          refresh();
+          return;
+        }
         mode = $("mode").value;
-        ready = false;
         awaitingAck = false;
         seq = 0; // sequences restart with every connection
+        arms = {};
+        lastStateAt = null;
+        staleOverride = 0;
+        placements = {};
+        panelAnchor = null;
         let opened;
         try {
           opened = new WebSocket($("url").value.trim());
         } catch (error) {
-          say(`That address cannot be opened: ${error.message}`);
+          notice = `The browser refused that address: ${error.message}`;
+          refresh();
           return;
         }
         socket = opened;
-        say("Connecting…");
+        connection = "connecting";
+        remember();
+        refresh();
         opened.addEventListener("open", () => opened.send(JSON.stringify(auth($("token").value))));
         opened.addEventListener("message", (event) => {
           const reply = JSON.parse(event.data);
           if (reply.type === "ready") {
+            // The host decides how many arms there are; follow it instead of failing.
             if (reply.version !== expectedVersion(mode)) {
-              say(
+              mode = reply.version === 2 ? "both" : "right";
+              $("mode").value = mode;
+              notice =
                 reply.version === 2
-                  ? "The host expects both hands. Choose “Both hands, two arms” and connect again."
-                  : "The host expects one hand. Choose a single hand and connect again.",
-              );
-              opened.close();
-              return;
+                  ? "The host drives two arms, so both hands are used."
+                  : "The host drives one arm, so only your right hand is used. To use the left, choose it above and connect again.";
             }
-            ready = true;
-            $("enter").disabled = false;
-            say(`Paired (session ${reply.session}). Enter the headset view to start sending.`);
+            connection = "paired";
+            refresh();
           } else if (reply.type === "accepted") {
             awaitingAck = false;
+          } else if (reply.type === "state" && reply.arms) {
+            const before = arms;
+            arms = reply.arms;
+            lastStateAt = performance.now();
+            buzz(alerts(before, arms));
+            refresh();
           }
         });
         opened.addEventListener("close", (event) => {
           if (socket !== opened) return;
-          ready = false;
-          $("enter").disabled = true;
-          const why = event.reason || (event.code === 1006 ? "no connection or untrusted certificate" : "");
-          say(`Disconnected (${event.code}${why ? `: ${why}` : ""}). The host is no longer following.`);
+          const wasPaired = connection === "paired";
+          socket = null;
+          connection = "offline";
+          awaitingAck = false;
+          arms = {};
+          lastStateAt = null;
+          notice = closeMessage(event.code, event.reason);
+          if (wasPaired && event.code !== 1000) pulse("left", 1, 300), pulse("right", 1, 300);
+          refresh();
         });
       });
 
-      $("enter").addEventListener("click", async () => {
-        if (!navigator.xr) {
-          say("This browser has no WebXR. Open the page in the headset's browser over HTTPS.");
-          return;
+      // ---- the headset ---------------------------------------------------
+
+      function ahead(viewer) {
+        const head = viewer.transform;
+        const at = [head.position.x, head.position.y, head.position.z];
+        const facingWay = rotate(
+          [head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w],
+          [0, 0, -1],
+        );
+        const length = Math.hypot(facingWay[0], facingWay[2]) || 1;
+        const forward = [facingWay[0] / length, 0, facingWay[2] / length];
+        return { at, forward, right: [-forward[2], 0, forward[0]] };
+      }
+
+      // Stand each virtual arm so its gripper starts in easy reach: in front of
+      // the head and a little below it, two arms side by side. The panel floats
+      // further away and higher, so the arm never hides it.
+      function place(viewer) {
+        const { at, forward, right } = ahead(viewer);
+        if (!panelAnchor) {
+          panelAnchor = [at[0] + 0.9 * forward[0], at[1] - 0.02, at[2] + 0.9 * forward[2]];
         }
+        if (!model) return;
+        for (const [name, arm] of Object.entries(arms)) {
+          if (placements[name] || !arm.measured) continue;
+          const side = name === "left" ? -0.22 : name === "right" ? 0.22 : 0;
+          const wanted = [
+            at[0] + 0.45 * forward[0] + side * right[0],
+            at[1] - 0.3,
+            at[2] + 0.45 * forward[2] + side * right[2],
+          ];
+          placements[name] = placeToolAt(model.scene, jointValues(model.scene, arm.measured), arm.base, wanted);
+        }
+      }
+
+      $("enter").addEventListener("click", async () => {
+        if (!navigator.xr || xr) return;
         // Passthrough keeps the real arm in view; fall back to VR where it is unavailable.
         const kind = (await navigator.xr.isSessionSupported("immersive-ar")) ? "immersive-ar" : "immersive-vr";
         try {
           xr = await navigator.xr.requestSession(kind, { requiredFeatures: ["local-floor"] });
         } catch (error) {
-          say(`The headset view could not start: ${error.message}`);
+          notice = `The headset view could not start: ${error.message}`;
+          refresh();
           return;
         }
         const gl = document.createElement("canvas").getContext("webgl", { xrCompatible: true });
         await xr.updateRenderState({ baseLayer: new XRWebGLLayer(xr, gl) });
+        const renderer = model ? new ArmRenderer(gl, model.meshes) : null;
+        const panel = new PanelRenderer(gl);
+        const panelCanvas = document.createElement("canvas");
+        panelCanvas.width = 1024;
+        panelCanvas.height = 640;
+        let panelText = "";
+        let panelCheckedAt = -Infinity;
         // Positions are metres in "local-floor": y up, origin on the floor where the session began.
         const space = await xr.requestReferenceSpace("local-floor");
+        placements = {};
+        panelAnchor = null;
+        notice = null;
+        refresh();
         xr.addEventListener("end", () => {
           xr = null;
-          say(ready ? "Headset view closed. Nothing is being sent." : $("status").textContent);
+          tracked = { left: false, right: false };
+          memory.left.held = memory.right.held = false;
+          refresh();
         });
 
-        const onFrame = (_time, frame) => {
+        const onFrame = (time, frame) => {
           if (!xr) return;
           xr.requestAnimationFrame(onFrame);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, xr.renderState.baseLayer.framebuffer);
+          const layer = xr.renderState.baseLayer;
+          gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
           gl.clearColor(0, 0, 0, 0);
-          gl.clear(gl.COLOR_BUFFER_BIT);
-          // Latest-only: skip this frame while the previous sample is unacknowledged.
-          if (!ready || awaitingAck) return;
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          const viewer = frame.getViewerPose(space);
+          if (viewer) place(viewer);
 
+          const grabbing = $("grab").checked;
           const hands = {};
+          const grips = {};
+          const balls = {};
+          const seen = { left: false, right: false };
+          let replace = false;
+          let busy = false;
           for (const source of xr.inputSources) {
             if (!source.gripSpace || !source.gamepad) continue;
-            if (source.handedness !== "left" && source.handedness !== "right") continue;
+            const side = source.handedness;
+            if (side !== "left" && side !== "right") continue;
             const pose = frame.getPose(source.gripSpace, space);
             if (!pose) continue;
-            const [trigger, squeeze] = source.gamepad.buttons; // the xr-standard layout
-            hands[source.handedness] = hand(
+            seen[side] = true;
+            pads[side] = source.gamepad;
+            const at = pose.transform.position;
+            grips[side] = [at.x, at.y, at.z];
+            // The xr-standard layout: trigger, squeeze, touchpad, thumbstick, then A or X.
+            const [trigger, squeeze, , thumbstick, primary] = source.gamepad.buttons;
+            const squeezed = squeeze?.pressed === true;
+            busy ||= squeezed;
+            replace ||= thumbstick?.pressed === true && !stick[side];
+            stick[side] = thumbstick?.pressed === true;
+            if (mode !== "both" && mode !== side) continue; // this hand drives no arm
+
+            const name = armFor(mode, side);
+            const tool = toolOf(name, placements);
+            const distance = tool ? Math.hypot(at.x - tool[0], at.y - tool[1], at.z - tool[2]) : NaN;
+            const wasHeld = memory[side].held;
+            const grip = grabbing ? grabbed(memory[side], squeezed, distance) : squeezed;
+            if (grabbing && grip && !wasHeld) pulse(side, 0.6, 40); // you have hold of it
+            if (grabbing && tool) balls[name] = { at: tool, color: grip ? BALL.held : distance <= REACH ? BALL.near : BALL.far };
+            hands[side] = hand(
               pose.transform,
-              squeeze?.pressed === true,
+              grip,
               trigger?.value ?? 0,
-              Number($("scale").value),
+              grabbing ? 1 : Number($("scale").value),
+              $("previewFirst").checked ? primary?.pressed === true : true,
             );
           }
-          const next = message(mode, seq, hands);
-          if (!next) return; // the chosen hand is not tracked: the host's timeout handles it
-          socket.send(JSON.stringify(next));
-          awaitingAck = true;
-          seq += 1;
+          tracked = seen;
+          if (replace && !busy) {
+            placements = {}; // both are placed again on the next frame
+            panelAnchor = null;
+          }
+
+          // Latest-only: skip sending while the previous sample is unacknowledged.
+          if (connection === "paired" && !awaitingAck) {
+            const next = message(mode, seq, hands);
+            if (next) {
+              send(next);
+              awaitingAck = true;
+              seq += 1;
+            } // else the chosen hand is out of sight, and the host's timeout handles it
+          }
+
+          if (time - panelCheckedAt > 250) {
+            panelCheckedAt = time;
+            const now = panelLines();
+            const text = JSON.stringify(now);
+            if (text !== panelText) {
+              panelText = text;
+              paintPanel(panelCanvas, now);
+              panel.setImage(panelCanvas);
+            }
+          }
+
+          if (!viewer) return;
+          const head = viewer.transform.position;
+          for (const eye of viewer.views) {
+            const port = layer.getViewport(eye);
+            gl.viewport(port.x, port.y, port.width, port.height);
+            const viewProjection = matMul(Array.from(eye.projectionMatrix), Array.from(eye.transform.inverse.matrix));
+            if (renderer) {
+              drawArms(renderer, viewProjection, placements);
+              for (const ball of Object.values(balls)) drawBall(renderer, viewProjection, ball.at, 0.02, ball.color);
+              for (const at of Object.values(grips)) drawBall(renderer, viewProjection, at, 0.012, [1, 1, 1, 1]);
+            }
+            if (panelAnchor) {
+              panel.draw(viewProjection, facing(panelAnchor, [head.x, head.y, head.z], 0.56, 0.35));
+            }
+          }
         };
         xr.requestAnimationFrame(onFrame);
-        say("Sending. Release the grip, then squeeze it to move.");
       });
+
+      refresh();
     </script>
   </body>
 </html>

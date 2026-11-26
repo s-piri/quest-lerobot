@@ -9,8 +9,9 @@ export function auth(token) {
 
 // One controller's fields from a WebXR rigid transform and its buttons, or null
 // when the pose is unusable. `squeezed` is the deadman; a pulled trigger closes
-// the gripper, so the opening sent is 1 - trigger.
-export function hand(transform, squeezed, trigger, scale) {
+// the gripper, so the opening sent is 1 - trigger. `follow` false moves only the
+// previewed goal: the real arm stays where it is until follow is true.
+export function hand(transform, squeezed, trigger, scale, follow = true) {
   const p = transform?.position;
   const o = transform?.orientation;
   if (!p || !o) return null;
@@ -23,7 +24,14 @@ export function hand(transform, squeezed, trigger, scale) {
     grip: squeezed === true,
     gripper: clamp01(1 - trigger),
     scale: clamp01(scale),
+    follow: follow === true,
   };
+}
+
+// Not input: it only lets the host deliver its state while no sample is flowing,
+// for example before the headset view starts or while a hand is out of sight.
+export function ping() {
+  return { type: "ping" };
 }
 
 // Version 1: one controller.
@@ -46,4 +54,22 @@ export function message(mode, seq, hands) {
 
 export function expectedVersion(mode) {
   return mode === "both" ? 2 : 1;
+}
+
+// The host names its arms "" for one arm, or "left" and "right" for two.
+export function armFor(mode, handedness) {
+  return mode === "both" ? handedness : "";
+}
+
+// Whether this hand's squeeze counts as a grip when the virtual gripper must be
+// grabbed. A grab starts only if the squeeze begins within reach of the gripper,
+// and lasts until the squeeze ends. `memory` holds { held, squeezed } per hand.
+export function grabbed(memory, squeezed, distance, reach = 0.12) {
+  if (!squeezed) {
+    memory.held = false;
+  } else if (!memory.squeezed) {
+    memory.held = Number.isFinite(distance) && distance <= reach;
+  }
+  memory.squeezed = squeezed;
+  return memory.held;
 }

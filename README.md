@@ -19,14 +19,22 @@ starting with explicit SO-101 contracts. Python 3.12 or newer.
   workspace limits, and latches stops and stale-feedback faults.
 - A LeRobot processor step (`processor.py`) that turns Quest input and the
   follower's observation into follower `.pos` goals for one arm or two.
-- A draft WebXR page (`client/`) whose messages are tested in Node against the
-  real listener. The page itself has not been run on a headset.
+- A draft WebXR page (`client/`) that sends controller poses and draws a
+  virtual arm: solid where the hand asks the arm to be, faint where the arm
+  is. Its messages and arm maths are tested in Node, and its flat preview was
+  checked in a desktop browser. It has not been run on a headset.
+- A preview mode: the virtual arm follows the hand while the real arm waits.
+- The upstream SO-101 URDF, packaged unmodified with its provenance, and
+  forward and inverse kinematics for it in the standard library
+  (`kinematics.py`). Forward kinematics is checked against an independent
+  URDF library.
 - Wheel installation and actual upstream plugin discovery checks.
 
 **It still does not drive an arm.** The gate and the processor step have only
-run against fake followers and a toy stand-in for kinematics. There is no
-SO-101 model, no limit values, no verified physical mapping and no runner that
-connects to a robot. Those need bench work and come next. The stock
+run against fake followers. The kinematic model is the upstream CAD export,
+not a measurement of your arm: there is no verified mapping from follower
+values to its joints, no limit values and no runner that connects to a robot.
+Those need bench work and come next. The stock
 `lerobot-teleoperate --teleop.type=quest` identity processor cannot convert
 these Cartesian input features into follower joint actions.
 
@@ -111,13 +119,66 @@ release before its own press counts, and again after it loses tracking. Both
 hands share one sequence and go stale together. A listener in one mode closes
 the connection on the other mode's message.
 
+### Preview and the virtual arm
+
+A hand may carry one optional field, `"follow"`. It defaults to `true`. With
+`false`, the gripped hand still moves the goal, but the command sent to the
+follower stands still; when `follow` turns `true` the command approaches that
+goal at the speed limits. Releasing the grip discards a previewed goal, and
+the next grip starts again from the measured arm. `get_action()` exports it as
+`quest.follow`.
+
+The host tells the headset what to draw with `Quest.send_state(state)`, where
+`state` comes from `QuestControlStep.headset_state()`:
+
+```json
+{"type":"state","arms":{"":{"state":"engaged","reason":"previewing",
+ "base":[0,0,0,1],"measured":[0.1,0.2,0.3,0,0,0.5],"goal":[0.3,0.2,0.3,0,0,0.5]}}}
+```
+
+Joints are the model's radians followed by the gripper opening from 0 to 1,
+and are `null` until the arm has been armed. `base` is that arm's rotation
+from headset space to its base frame. Delivery never blocks the control loop:
+the listener keeps only the newest state and sends it after acknowledging the
+client's next sample, so a state can be skipped but never arrives out of order.
+
 ### Browser client
 
 `client/index.html` is a static page for the headset's browser. It pairs with
 the address and token, enters passthrough where available, and sends grip
 poses in the `local-floor` reference space: metres, y up, origin on the floor.
-Squeezing the grip is the deadman and a pulled trigger closes the gripper. The
-plugin does not serve it: host the `client/` folder over HTTPS yourself, list
+Squeezing the grip is the deadman and a pulled trigger closes the gripper.
+
+It draws each arm from the host's state, using simplified copies of the
+upstream meshes in `client/assets`. By default you move an arm by grabbing its
+virtual gripper: a squeeze counts only if it starts within 12 cm of it, and
+hand and gripper then move one to one. Unticking that setting lets you squeeze
+anywhere and use a motion scale. "Preview first" sends `follow` only while A or
+X is held.
+
+The page always says what is happening and what to do next, in plain words,
+both on the page and on a panel that floats in the headset view. That includes
+why nothing is drawn (the arm appears only once the host has armed, because the
+joint mapping needs the calibration given then), a hand that is out of sight,
+a target out of reach, a stop or fault and that it must be cleared on the host,
+a lost connection and why it was refused, and a picture that has stopped
+updating. In the headset a ball marks where to grab and turns green within
+reach and blue while held, the arm turns orange when out of reach and red when
+stopped, and the controller buzzes on a grab, on going out of reach and on a
+stop. A thumbstick press brings the arm and the panel back in front of you.
+
+`quest.pairing_link("https://your-host/client/")` returns the page's address
+with this run's listener and token filled in, so nobody types a token in a
+headset. It reveals the token, so treat the link as one. The page remembers the
+address and settings between visits, never the token.
+
+While no sample is flowing the page sends `{"type":"ping"}`, which is not
+input and keeps nothing alive: it only lets the host deliver its state, so the
+picture keeps up before the headset view starts and while a hand is out of
+sight. Without a host, `?pose=0.6,-0.5,0.7,0.6,0.3,0.1` shows that pose,
+`?state=<JSON>` a whole host state, and `?panel=1` the headset panel.
+
+The plugin does not serve it: host the `client/` folder over HTTPS yourself, list
 that exact origin in `origins`, and give the listener a certificate the headset
 trusts. A link may prefill the fields after `#`, for example
 `#url=wss://host:8765&token=...&mode=both`.
@@ -140,6 +201,26 @@ standard loop does not automatically call it; the future application must pass
 observations explicitly. Requested/applied commands stay unavailable unless
 captured independently by their owner. The input plugin cannot provide an
 arm watchdog, IK limits, a stop latch or recording semantics by itself.
+
+## Kinematics
+
+```python
+from lerobot_teleoperator_quest.kinematics import so101
+
+model = so101()                       # base_link to gripper_frame_link
+pose = model.fk(joints)               # URDF radians in, a Pose in the base frame out
+joints = model.ik(pose, seed)         # None when the position is out of reach
+```
+
+The model is `so101_new_calib.urdf` from TheRobotStudio/SO-ARM100, pinned by
+commit and checksum in `models/PROVENANCE.md`. Its joint values are URDF
+radians, not follower values: `UrdfMapping` converts between them, and that
+mapping must be measured on the arm.
+
+The arm has five joints, so it cannot reach every orientation. `ik` reaches
+the position exactly and turns toward the requested orientation only as far as
+it can while staying near the seed. Called each tick with the previous answer,
+the orientation closes in over a few ticks. A solve takes about a millisecond.
 
 ## Motion gate
 
@@ -208,6 +289,10 @@ python scripts/check_installation.py --integration --wheel dist/lerobot_teleoper
 
 No test opens a serial port or commands hardware. Core-only environments skip
 the integration modules; CI has a separate job that installs and requires them.
-The client checks need Node 22 or newer (`node --test client/protocol.test.mjs`),
-and one check constructs the official follower classes, which needs `rustypot`.
+The client checks need Node 22 or newer
+(`node --test client/protocol.test.mjs client/arm.test.mjs client/guide.test.mjs`), and one check
+constructs the official follower classes, which needs `rustypot`.
+`scripts/build_client_assets.py` rebuilds the headset's arm model and
+`scripts/make_fk_fixtures.py` the reference poses; both are development tools
+with their own dependencies, described at the top of each file.
 See [the roadmap](docs/roadmap.md) and [design](docs/design.md).

@@ -50,6 +50,37 @@ Arm lag and gripper stalls are useful measured state. Replacing measurements
 with targets silently corrupts demonstrations. Missing applied values are None,
 not copies of requested values.
 
+**Kinematics is our own standard-library code — do not swap in upstream's solver.**
+LeRobot's `RobotKinematics` needs `placo`, for which no Windows build was found
+on 2026-11-26, and the user develops on Windows. The packaged URDF is the
+unmodified upstream file, checked by checksum at load; update the file, the
+commit and the checksum together and regenerate the reference poses.
+
+**Inverse kinematics solves position first and stays near its seed.**
+The arm has five joints, so most orientations are unreachable. Weighting
+orientation against position bends the tool off target, and chasing an
+unreachable turn without a pull toward the seed swings the joints a long way
+for no gain. The final position-only pass is what makes position win near
+singular poses.
+
+**The goal and the command are separate — do not merge them back.**
+The goal is where the gripped hand asks the arm to be and is what the headset
+draws; the command is what is sent and approaches the goal at the speed
+limits, only while the sample says to follow. Limits bound the goal against
+the command, where the arm is being held, not against the previous goal.
+
+**Headset state rides on acknowledgments, newest only — do not send it from the loop.**
+A direct send from the control loop would block on a slow headset. The
+listener thread delivers the newest queued state after acknowledging a sample,
+so states can be skipped and tests must not count them.
+
+**Every state the operator can be in has a sentence — keep it that way.**
+Inside the headset the page's own text is invisible, so guidance is drawn on a
+panel there too. Wording lives in `client/guide.js` and is tested: a new host
+state or reason needs a sentence saying what is happening and what to do, not
+the host's raw wording. A ping is not input and must never refresh the input
+watchdog; it exists only so the picture keeps up while no sample is flowing.
+
 **A hold latches one measurement; limits never pull the arm inward on their own.**
 Re-seeding the hold from each new measurement lets gravity sag walk the goal
 downward. Clamping a state that starts outside a limit moves the arm with no

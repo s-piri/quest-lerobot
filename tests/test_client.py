@@ -36,7 +36,11 @@ needs_node = pytest.mark.skipif(
 @needs_node
 def test_message_builders_pass_their_own_tests():
     result = subprocess.run(
-        [NODE, "--test", str(CLIENT / "protocol.test.mjs")],
+        [
+            NODE,
+            "--test",
+            *(str(CLIENT / f"{name}.test.mjs") for name in ("protocol", "arm", "guide")),
+        ],
         capture_output=True,
         encoding="utf-8",
         errors="replace",

@@ -34,7 +34,7 @@ jobs:
       # Official follower classes need their motor library to be constructed (never connected).
       - run: python -m pip install "rustypot>=1.13.1,<2.0.0"
       - run: python -c "import lerobot; from lerobot_teleoperator_quest import Quest"
-      - run: node --test client/protocol.test.mjs
+      - run: node --test client/protocol.test.mjs client/arm.test.mjs client/guide.test.mjs
       # -rs lists skips: none are expected in this job.
       - run: python -m pytest -rs
       - run: python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist

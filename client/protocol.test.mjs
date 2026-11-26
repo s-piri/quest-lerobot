@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { auth, expectedVersion, frame, hand, message, pose } from "./protocol.js";
+import { armFor, auth, expectedVersion, frame, grabbed, hand, message, ping, pose } from "./protocol.js";
 
 const transform = (position = [1, 2, 3], orientation = [0, 0, 0, 1]) => ({
   position: { x: position[0], y: position[1], z: position[2] },
@@ -10,14 +10,41 @@ const transform = (position = [1, 2, 3], orientation = [0, 0, 0, 1]) => ({
 
 test("a hand carries exactly the documented fields", () => {
   const fields = hand(transform(), true, 0.25, 0.5);
-  assert.deepEqual(Object.keys(fields).sort(), ["grip", "gripper", "orientation", "position", "scale"]);
+  assert.deepEqual(Object.keys(fields).sort(), ["follow", "grip", "gripper", "orientation", "position", "scale"]);
   assert.deepEqual(fields, {
     position: [1, 2, 3],
     orientation: [0, 0, 0, 1],
     grip: true,
     gripper: 0.75,
     scale: 0.5,
+    follow: true,
   });
+});
+
+test("follow is a strict boolean that defaults to true", () => {
+  assert.equal(hand(transform(), true, 0, 1).follow, true);
+  assert.equal(hand(transform(), true, 0, 1, false).follow, false);
+  assert.equal(hand(transform(), true, 0, 1, 1).follow, false);
+  assert.equal(hand(transform(), true, 0, 1, undefined).follow, true);
+});
+
+test("a grab starts only within reach and lasts until the squeeze ends", () => {
+  const memory = { held: false, squeezed: false };
+  assert.equal(grabbed(memory, true, 0.3), false); // squeezed too far away
+  assert.equal(grabbed(memory, true, 0.05), false); // moving closer while squeezing does not grab
+  assert.equal(grabbed(memory, false, 0.05), false);
+  assert.equal(grabbed(memory, true, 0.05), true); // a fresh squeeze within reach
+  assert.equal(grabbed(memory, true, 0.9), true); // it holds wherever the hand goes
+  assert.equal(grabbed(memory, false, 0.9), false);
+  assert.equal(grabbed(memory, true, NaN), false); // no arm is drawn: nothing to grab
+  assert.equal(grabbed({ held: false, squeezed: false }, true, 0.12), true);
+});
+
+test("hands map to the host's arm names", () => {
+  assert.equal(armFor("both", "left"), "left");
+  assert.equal(armFor("both", "right"), "right");
+  assert.equal(armFor("left", "left"), "");
+  assert.equal(armFor("right", "right"), "");
 });
 
 test("the orientation is sent as a unit quaternion", () => {
@@ -73,4 +100,8 @@ test("the mode chooses the message, and a missing single hand sends nothing", ()
 
 test("authentication is the first message", () => {
   assert.deepEqual(auth("secret"), { type: "auth", token: "secret" });
+});
+
+test("a ping is exactly what the host accepts as one", () => {
+  assert.deepEqual(ping(), { type: "ping" });
 });
