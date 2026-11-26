@@ -48,16 +48,54 @@ Before enabling physical movement:
   frame rate with two arms drawn, where the virtual arm and the panel appear,
   whether the panel text is comfortable to read, whether grabbing the gripper
   feels right, and whether the buzzes help or annoy.
-- A separate plugin that builds a 3D Gaussian splat of the scene from
-  wrist-camera recordings, with camera poses from this package's kinematics,
-  to stand behind the virtual arm for teleoperation from another room. The
-  splat is a snapshot; live elements are drawn into it.
 - For two arms: a second official calibration, mapping, limits and base
   rotation, and a bench check that each hand drives the arm it should.
 - A runner that composes the verified processor and official SO-101 follower.
 - Official LeRobot dataset record/reload smoke test, retaining measured state
   and the action actually applied after all processing/clipping.
 - Camera names, frame timing and task metadata tested through the real library.
+
+## Then: a splat of the scene for teleoperation from another room
+
+Two cameras are barely enough to teleoperate an arm you cannot see. The plan
+is a 3D Gaussian splat of the scene, built from wrist-camera recordings, shown
+in the headset behind the virtual arm.
+
+A splat is a snapshot: it shows the scene as scanned, not objects moved since.
+So it is the backdrop only, and what is live is drawn into it: the arm from
+its measured joints, and the wrist-camera image at the camera's true pose. A
+splat that updates itself is a later upgrade, if a stereo or depth camera is
+added.
+
+It lives in this repository, split by weight, under three rules:
+
+- The core stays dependency-free. Building tools go in their own subpackage
+  behind an optional install, as LeRobot itself is; installing the teleoperator
+  pulls in none of it, and importing the package never imports it.
+- COLMAP and the splat trainer are not dependencies. They run as external
+  programs in their own environment; the code here only exports frames and
+  camera poses for them and brings the result back.
+- Splat files are never committed. They are local files the page loads.
+
+Viewing is part of the client page, because the splat shares a scene with the
+virtual arm. If building grows into something larger, the subpackage can move
+out then.
+
+Steps, the first two needing neither the arms nor a GPU:
+
+1. Export a recording to frames and camera poses: joint angles through the
+   verified mapping and this package's kinematics, then a fixed camera-to-wrist
+   transform. Poses from joints are the starting guess that reconstruction
+   refines; they supply metric scale and the arm's base frame.
+2. A calibration procedure for the camera's lens and its camera-to-wrist
+   transform, with a printed board. The upstream model with the wrist-camera
+   mount gives the starting value.
+3. Record a dedicated slow scan of a static scene with exposure locked, and
+   mask the gripper. Ordinary teleoperation recordings will not do: things move.
+4. Reconstruct and train on the GPU, then check the result against the arm.
+5. Draw the splat in the page, registered to the arm's base, and measure what
+   a standalone headset can render smoothly.
+6. Place the live wrist-camera image in the scene.
 
 The old TEACH/playback/replay applications, B601 drivers, cloud storage and Pi
 deployment are not part of the bootstrap. Add features only when they support

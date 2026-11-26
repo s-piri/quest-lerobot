@@ -74,6 +74,13 @@ A direct send from the control loop would block on a slow headset. The
 listener thread delivers the newest queued state after acknowledging a sample,
 so states can be skipped and tests must not count them.
 
+**Splat building lives here as an optional subpackage — do not make its tools dependencies.**
+The splat exists for teleoperation and needs this package's kinematics and
+mapping, so it shares the repository (decided 2026-11-27). The core stays
+dependency-free and importing the package never imports the building code.
+COLMAP and the trainer run as external programs in their own environment.
+Splat files are never committed. See `docs/roadmap.md`.
+
 **Every state the operator can be in has a sentence — keep it that way.**
 Inside the headset the page's own text is invisible, so guidance is drawn on a
 panel there too. Wording lives in `client/guide.js` and is tested: a new host
